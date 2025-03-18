@@ -111,7 +111,6 @@ def flash_attention_implementation(
             .set(**common_cfg)
             .instantiate()(query, key, value, bias, prng_key)
         )
-
     return jit_attn
 
 

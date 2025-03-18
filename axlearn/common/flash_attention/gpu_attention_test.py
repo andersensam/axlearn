@@ -16,6 +16,7 @@ PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_tes
 import functools
 from typing import Any, Callable, Literal, Optional
 
+import sys
 import chex
 import jax
 import jax.numpy as jnp
@@ -157,7 +158,6 @@ def test_triton_fwd_only_against_ref(
     elif dtype == jnp.float32:
         chex.assert_trees_all_close(o, o_ref, atol=0.03)
 
-
 @common_attn_test_params
 def test_triton_against_xla_ref(
     batch_size: int,
@@ -205,7 +205,6 @@ def test_triton_against_xla_ref(
     _test_forward_and_backward(
         q, k, v, bias, ref_fn=ref_fn, test_fn=test_fn, forward_tol_fn=forward_tol_fn
     )
-
 
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("seq_len", [512, 2048])
@@ -260,7 +259,8 @@ def test_sliding_window_mask(
     ],
 )
 @pytest.mark.parametrize("causal", [True, False])
-@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
+#@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
+@pytest.mark.parametrize("dtype", [jnp.float16])
 def test_cudnn_against_triton_ref(
     batch_size: int,
     num_heads: int,

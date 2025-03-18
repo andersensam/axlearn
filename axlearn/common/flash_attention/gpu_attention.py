@@ -32,6 +32,8 @@ import functools
 from collections.abc import Sequence
 from typing import Any, Optional, Tuple
 
+import sys
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -730,6 +732,10 @@ def _mha_backward(
     def call_kernel(
         *, kernel, grid, out_shape, in_specs, out_specs, index_offset, index_offset_size
     ):
+        print(f"gpu_attention.py: Calling kernel: {kernel.__name__}", file=sys.stderr)
+        print(f"gpu_attention.py: Q.dtype: {q.dtype}. K.dtype: {k.dtype}. V.dtype: {v.dtype}", file=sys.stderr)
+        print(f"gpu_attention.py: Q.shape: {q.shape}. K.shape: {k.shape}. V.shape: {v.shape}", file=sys.stderr)
+        print(f"gpu_attention.py: Grid: {grid}")
         return pl.pallas_call(
             functools.partial(
                 kernel,
