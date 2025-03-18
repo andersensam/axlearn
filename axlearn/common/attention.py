@@ -1214,13 +1214,15 @@ def _rotary_sinusoidal_positional_embeddings(
     """
     if dim % 2 != 0:
         raise ValueError(f"dim: {dim} should be a multiplier of 2.")
-    exponents = jnp.arange(dim).astype(jnp.float32)
-    pos_array = positions.astype(jnp.float32)
-    exponents = jnp.power(theta, 2 * (exponents // 2) / dim)
-    position_enc = jnp.expand_dims(pos_array, 2) / jnp.expand_dims(exponents, [0, 1])
+    dim_array = jnp.arange(dim // 2).astype(jnp.float32)
+    pos_array = positions.astype(jnp.float32)  # [batch_size, seq_len]
+    exponents = jnp.power(theta, 2 * dim_array / dim)  # 10000 ** (2i / dim), [dim/2]
+    position_enc = einops.rearrange(pos_array, "b t -> b t 1") / einops.rearrange(
+        exponents, "d -> 1 1 d"
+    )  # [batch_size, seq_len, dim/2]
 
-    rope_part_1 = jnp.sin(position_enc[:, :, 0::2])
-    rope_part_2 = jnp.cos(position_enc[:, :, 1::2])
+    rope_part_1 = jnp.sin(position_enc)
+    rope_part_2 = jnp.cos(position_enc)
     rope = jnp.concatenate((rope_part_1, rope_part_2), axis=-1)
     return rope
 
@@ -1312,31 +1314,28 @@ def apply_rotary_position_embeddings(
         Rotary position affined value embeddings with shape [batch_size, seq_len, num_heads, dim]
             if rotary_value == True, else original value embeddings
     """
-    # sin [batch_size, num_heads, sequence_length, embed_size_per_head//2]
-    # cos [batch_size, num_heads, sequence_length, embed_size_per_head//2]
+    # sin/cos: [batch_size, seq_len, 1, dim/2]
     sin, cos = jnp.split(sinusoidal_pos, 2, axis=-1)
+    # Note: '...' is used instead of 'b s n' because downstream uses it with different ranks.
     # sin [θ0,θ1,θ2......θd/2-1] -> sin_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    sin_pos = jnp.reshape(jnp.stack([sin, sin], axis=-1), sinusoidal_pos.shape)
+    sin_pos = einops.repeat(sin, "... h -> ... (h k)", k=2)
     # cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-    cos_pos = jnp.reshape(jnp.stack([cos, cos], axis=-1), sinusoidal_pos.shape)
+    cos_pos = einops.repeat(cos, "... h -> ... (h k)", k=2)
+
+    def rotate_half(x):
+        return einops.rearrange(
+            jnp.stack([-x[..., 1::2], x[..., ::2]], axis=-1), "... h k -> ... (h k)", k=2
+        )
+
     # rotate_half_query_layer [-q1,q0,-q3,q2......,-qd-1,qd-2]
-    rotate_half_query = jnp.reshape(
-        jnp.stack([-query[..., 1::2], query[..., ::2]], axis=-1), query.shape
-    )
-    query = query * cos_pos + rotate_half_query * sin_pos
+    query = query * cos_pos + rotate_half(query) * sin_pos
 
     if rotary_key:
         # rotate_half_key_layer [-k1,k0,-k3,k2......,-kd-1,kd-2]
-        rotate_half_key = jnp.reshape(
-            jnp.stack([-key[..., 1::2], key[..., ::2]], axis=-1), key.shape
-        )
-        key = key * cos_pos + rotate_half_key * sin_pos
+        key = key * cos_pos + rotate_half(key) * sin_pos
     if rotary_value:
         # rotate_half_value_layer [-v1,v0,-v3,v2......,-vd-1,vd-2]
-        rotate_half_value = jnp.reshape(
-            jnp.stack([-value[..., 1::2], value[..., ::2]], axis=-1), value.shape
-        )
-        value = value * cos_pos + rotate_half_value * sin_pos
+        value = value * cos_pos + rotate_half(value) * sin_pos
     return query, key, value
 
 
@@ -2091,6 +2090,44 @@ class MultiheadAttention(BaseLayer):
         return config_for_function(constant_scale_fn).set(value=1)
 
 
+def compute_gqa_logits(q_proj: Tensor, k_proj: Tensor) -> Tensor:
+    """Compute attention logits.
+
+    Args:
+        q_proj: query tensor, [batch, target_length, num_heads, per_head_dim].
+        k_proj: key tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+    Returns:
+        logits: [batch, num_heads, target_length, source_length].
+    """
+    kv_heads = k_proj.shape[2]
+    num_head_group = q_proj.shape[2] // kv_heads
+    assert q_proj.shape[2] % kv_heads == 0
+    q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
+    k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
+    logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
+    return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+
+
+def compute_gqa_context(probs: Tensor, v_proj: Tensor) -> Tensor:
+    """Compute attention context.
+
+    Args:
+        probs: probs tensor, [batch, num_heads, target_length, source_length].
+        v_proj: value tensor, [batch, source_length, num_kv_heads, per_head_dim].
+
+    Returns:
+        context: [batch, target_length, num_heads, per_head_dim].
+    """
+    kv_heads = v_proj.shape[2]
+    num_head_group = probs.shape[1] // kv_heads
+    assert probs.shape[1] % kv_heads == 0
+    probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
+    v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
+    context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
+    return einops.rearrange(context, "b t k g h -> b t (k g) h")
+
+
 class GroupedQueryAttention(MultiheadAttention):
     """A Grouped-Query Attention (GQA) layer.
 
@@ -2129,12 +2166,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_logits(q_proj=q_proj, k_proj=k_proj)
 
-        q_proj = self.scale_query(q_proj)
-        k_proj = self.scale_key(k_proj)
-        q_proj = einops.rearrange(q_proj, "b t (k g) h -> b t k g h", k=kv_heads, g=num_head_group)
-        k_proj = einops.rearrange(k_proj, "b s k h -> b s k 1 h")
-        logits = jnp.einsum("btkgh,bsk1h->bkgts", q_proj, k_proj)
-        return einops.rearrange(logits, "b k g t s -> b (k g) t s")
+        return compute_gqa_logits(self.scale_query(q_proj), self.scale_key(k_proj))
 
     def _compute_context(self, probs: Tensor, v_proj: Tensor) -> Tensor:
         """Compute attention context.
@@ -2151,10 +2183,7 @@ class GroupedQueryAttention(MultiheadAttention):
         if num_head_group == 1:
             return super()._compute_context(probs=probs, v_proj=v_proj)
 
-        probs = einops.rearrange(probs, "b (k g) t s -> b k g t s", k=kv_heads, g=num_head_group)
-        v_proj = einops.rearrange(v_proj, "b s k h -> b s k 1 h")
-        context = jnp.einsum("bkgts,bsk1h->btkgh", probs, v_proj)
-        return einops.rearrange(context, "b t k g h -> b t (k g) h")
+        return compute_gqa_context(probs, v_proj)
 
 
 class SigmoidAttention(MultiheadAttention):

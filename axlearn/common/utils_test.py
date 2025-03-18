@@ -19,13 +19,19 @@ import pytest
 import tensorflow as tf
 from absl.testing import absltest, parameterized
 from jax import numpy as jnp
+from jax._src.sharding_impls import get_process_index_and_count
 from jax.ad_checkpoint import checkpoint_policies as jax_remat_policies
 from jax.experimental import checkify, mesh_utils
 from jax.sharding import PartitionSpec
 
 from axlearn.common import learner, optimizers, serialization, struct, utils
 from axlearn.common.base_layer import BaseLayer, FactorizationSpec, ParameterSpec
-from axlearn.common.config import config_class, config_for_function, similar_names
+from axlearn.common.config import (
+    config_class,
+    config_for_function,
+    maybe_instantiate,
+    similar_names,
+)
 from axlearn.common.layers import BatchNorm, LayerNorm, Linear
 from axlearn.common.metrics import WeightedScalar
 from axlearn.common.module import Module
@@ -48,12 +54,15 @@ from axlearn.common.utils import (
     HybridMeshShape,
     MeshShape,
     NestedTensor,
+    PerParamFn,
     StackedKeyArray,
     Tensor,
     VDict,
     as_numpy_array,
     as_tensor,
+    canonicalize_per_param_dtype,
     cast_floats,
+    cast_floats_per_param,
     check_jax_type,
     check_param_shape_alignment,
     complete_partition_spec_tree,
@@ -70,6 +79,7 @@ from axlearn.common.utils import (
     infer_mesh_shape,
     input_partition_spec,
     match_regex_rules,
+    per_param_dtype_by_path,
     prune_empty,
     prune_tree,
     pytree_children,
@@ -83,7 +93,6 @@ from axlearn.common.utils import (
     validate_contains_paths,
     validate_float_dtype,
     vectorized_tree_map,
-    with_sharding_constraint,
 )
 
 
@@ -717,6 +726,91 @@ class TreeUtilsTest(TestCase):
         jax.tree.map(check_type, out_tree)
 
         self.assertEqual(out_tree["w2"].dtype, in_tree["w2"].dtype)
+
+    @parameterized.parameters(
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+                default_dtype=jnp.bfloat16,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.bfloat16,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path),
+            {
+                "w1": None,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                update_rules=[
+                    ("w1", jnp.float32),
+                ],
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": None,
+            },
+        ),
+        (
+            config_for_function(per_param_dtype_by_path).set(
+                default_dtype=jnp.float32,
+            ),
+            {
+                "w1": jnp.float32,
+                "w2": jnp.float32,
+            },
+        ),
+    )
+    def test_per_param_train_dtype_by_path(self, config, cast_dtype):
+        tree = {
+            "w1": jnp.ones(2, dtype=jnp.bfloat16),
+            "w2": jnp.ones(3, dtype=jnp.bfloat16),
+        }
+        per_param_train_dtype_by_path_fn = config.instantiate()
+        out_tree = per_param_train_dtype_by_path_fn(tree)
+        self.assertEqual(out_tree, cast_dtype)
+
+    @parameterized.parameters(
+        None,
+        jnp.float32,
+        config_for_function(per_param_dtype_by_path).set(
+            update_rules=[
+                ("^.*w1.*$", jnp.float32),
+            ],
+            default_dtype=jnp.bfloat16,
+        ),
+    )
+    def test_canonicalize_per_param_dtype(self, train_dtype):
+        canonicalized_train_dtype = maybe_instantiate(canonicalize_per_param_dtype(train_dtype))
+        self.assertIsInstance(canonicalized_train_dtype, PerParamFn)
+
+    @parameterized.parameters(
+        (
+            {"w1": None},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+        (
+            {"w1": jnp.float32},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32)},
+        ),
+        (
+            {"w1": jnp.float32, "w2": jnp.bfloat16},
+            {"w1": jnp.ones(2, dtype=jnp.bfloat16), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+            {"w1": jnp.ones(2, dtype=jnp.float32), "w2": jnp.ones(2, dtype=jnp.bfloat16)},
+        ),
+    )
+    def test_cast_floats_per_param(self, per_param_train_dtype, in_tree, casted_tree):
+        out_tree = cast_floats_per_param(in_tree, per_param_train_dtype)
+        jax.tree.map(self.assertTensorEqual, out_tree, casted_tree)
 
     def test_count_model_params(self):
         tree = {
@@ -1827,60 +1921,56 @@ class HostToGlobalArrayTest(TestCase):
             # Check that contents are as expected.
             self.assertNestedEqual(global_array, replicate_to_local_data(batch))
 
-    @pytest.mark.tpu
-    def test_every_other_process(self):
+    # Test process_count // 1, process_count // 2, process_count // 4.
+    # On v5e-16, this exercises 4, 2, and 1 reading hosts out of 4.
+    @parameterized.parameters(1, 2, 4)
+    def test_every_other_process(self, divisor: int):
         """Test a case where every other process produces a slice.
 
-        In this case, we require a dispatch step.
+        We build the array directly with `global_to_host_array`.
         """
-
         device_count = jax.device_count()
         process_count = jax.process_count()
         print(f"{device_count=}, {process_count=}")
-        assert process_count > 2  # E.g., run on v5e-16.
+        # E.g., run on v5e-16.
+        if process_count % divisor != 0:
+            pytest.skip(reason="Incompatible process_count/divisor.")
 
         # Use a logical shape that has dim=0 smaller than number of hosts.
         # This requires us to produce padding batches on some hosts.
-        global_logical_shape = (process_count // 2, 1)
-        global_physical_shape = (device_count, 1)
-        feed_index = jax.process_index()
+        global_logical_shape = (process_count // divisor, 1)
 
         with jax.sharding.Mesh(
             np.array(jax.devices()).reshape(global_logical_shape[0], -1), ("x", "y")
-        ):
-            logical_sharding = PartitionSpec(("x",))
+        ) as mesh:
+            logical_sharding = jax.sharding.NamedSharding(mesh, PartitionSpec("x"))
 
-            # Every other feed is padding.
-            if feed_index % 2 == 1:
-                local_x = np.zeros([1, 1])
-            else:
-                local_x = np.arange(feed_index, feed_index + 1)[:, None]
-
-            # Pad to at least number of local devices.
-            feed_physical_size = global_physical_shape[0] // process_count
-            pad_size = feed_physical_size - local_x.shape[0]
-            local_x = jnp.pad(local_x, ((0, pad_size), (0, 0)))
-
-            # Dispatch to remove padding examples.
-            dispatch = np.eye(global_physical_shape[0])[
-                np.arange(global_logical_shape[0]) * feed_physical_size * 2,
-            ]
-
-            # Convert to GDA.
-            global_x = host_to_global_device_array(local_x)
-            assert global_x.shape == global_physical_shape
-
-            batch = with_sharding_constraint(
-                jnp.einsum("p...,lp->l...", global_x, dispatch), logical_sharding
+            feed_idx, feed_count = get_process_index_and_count(
+                logical_sharding, dim=0, ndims=len(global_logical_shape)
             )
-            jax.debug.visualize_array_sharding(batch)
+            assert global_logical_shape[0] % feed_count == 0
+            local_shape = (global_logical_shape[0] // feed_count, *global_logical_shape[1:])
 
-        # Check that sharding is as expected.
-        self.assertEqual(logical_sharding, batch.sharding.spec)
+            local_data = [
+                jax.random.uniform(jax.random.PRNGKey(i), shape=local_shape)
+                for i in range(feed_count)
+            ]
+            local_x = local_data[feed_idx]
+            global_x = host_to_global_device_array(local_x, partition=logical_sharding.spec)
+            global_idx = host_to_global_device_array(
+                jnp.array([feed_idx]), partition=logical_sharding.spec
+            )
 
-        # Check that contents are as expected.
-        expected = jnp.arange(0, process_count, 2, dtype=batch.dtype)[:, None]
-        self.assertNestedEqual(expected, replicate_to_local_data(batch))
+            self.assertEqual(global_x.shape, global_logical_shape)
+
+            # Reorder based on feed indices.
+            global_x = replicate_to_local_data(global_x)
+            global_idx = replicate_to_local_data(global_idx)
+
+            print(f"{global_x=} {global_idx=}")
+
+            global_x = global_x[global_idx]
+            self.assertNestedAllClose(np.concatenate(local_data, axis=0), global_x)
 
 
 class ValidateContainsPathsTest(TestCase):

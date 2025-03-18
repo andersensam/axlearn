@@ -265,6 +265,11 @@ class TPUReplicatedJob(BaseReplicatedJob):
             reservation: If specified, the TPU reservation name. This is not necessarily specific to
                 GKE and can be the same as e.g. the QRM reservation.
                 https://cloud.google.com/sdk/gcloud/reference/alpha/compute/tpus/reservations/list
+            reservation_project: GCP project to which the TPU reservation belongs. This is needed
+                for shared reservations. If specified, the TPU provisioner will instead use the
+                full reservation name for reservation affinity in the format:
+                "projects/<reservation_project>/reservations/<reservation>"
+                https://github.com/GoogleCloudPlatform/ai-on-gke/blob/889ec98f9b9a7aec05eb0f9890ada1f4c59b6159/tpu-provisioner/internal/cloud/gke.go#L328-L334
             enable_tpu_ici_resiliency: Whether to enable TPU ICI resiliency.
                 If True, the job will persist through some types of network failure, but with
                 degraded performance.
@@ -289,6 +294,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
         """
 
         reservation: Optional[str] = None
+        reservation_project: Optional[str] = None
         enable_tpu_ici_resiliency: Optional[bool] = None
         location_hint: Optional[str] = None
         enable_tpu_smart_repair: bool = False
@@ -301,6 +307,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
         super().define_flags(fv)
         common_kwargs = dict(flag_values=fv, allow_override=True)
         flags.DEFINE_string("reservation", None, "TPU reservation.", **common_kwargs)
+        flags.DEFINE_string(
+            "reservation_project", None, "TPU reservation project.", **common_kwargs
+        )
         flags.DEFINE_boolean(
             "enable_tpu_ici_resiliency",
             None,
@@ -321,6 +330,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
     def from_flags(cls, fv: flags.FlagValues, **kwargs) -> Config:
         cfg: TPUReplicatedJob.Config = super().from_flags(fv, **kwargs)
         cfg.reservation = cfg.reservation or gcp_settings("gke_reservation", required=False, fv=fv)
+        cfg.reservation_project = cfg.reservation_project or gcp_settings(
+            "gke_reservation_project", required=False, fv=fv
+        )
         # Only read from the config file since users shouldn't need to configure this.
         cfg.location_hint = gcp_settings("location_hint", required=False, fv=fv)
         cfg.enable_tpu_smart_repair = bool(
@@ -415,7 +427,9 @@ class TPUReplicatedJob(BaseReplicatedJob):
             imagePullPolicy="Always",
         )
 
-    def _build_uploader_container(self) -> Nested[Any]:
+    def _build_uploader_container(
+        self, src: str = "/output", output_volume_mount: Optional[dict] = None
+    ) -> Nested[Any]:
         """Builds a config for the uploader container which sync logs to the output dir.
 
         The sidecar container runs an loop to periodically sync outputs to GCS until the Pod is
@@ -427,10 +441,10 @@ class TPUReplicatedJob(BaseReplicatedJob):
             A nested dict corresponding to a k8s Container config.
         """
         cfg: TPUReplicatedJob.Config = self.config
-
+        output_volume_mount = output_volume_mount or self._output_volume_mount
         dst = f"{cfg.output_dir}/output/$HOSTNAME/"
         interval_s = 60
-        sync_command = f"while true; do gsutil -m rsync -r /output {dst}; sleep {interval_s}; done"
+        sync_command = f"while true; do gsutil -m rsync -r {src} {dst}; sleep {interval_s}; done"
         resources = {
             "requests": {"cpu": "100m", "memory": "128Mi"},
             "limits": {"cpu": "500m", "memory": "256Mi"},
@@ -444,7 +458,7 @@ class TPUReplicatedJob(BaseReplicatedJob):
             command=["/bin/sh", "-c"],
             args=[sync_command],
             resources=resources,
-            volumeMounts=[self._output_volume_mount],
+            volumeMounts=[output_volume_mount],
         )
 
     def _build_shared_memory_volumes(self, shared_memory: str) -> Nested[Any]:
@@ -523,6 +537,8 @@ class TPUReplicatedJob(BaseReplicatedJob):
         if tier == "0" and cfg.reservation is not None:
             logging.info("Found tier=%s in env. Using reservation=%s", tier, cfg.reservation)
             selector.update({"cloud.google.com/reservation-name": cfg.reservation})
+            if cfg.reservation_project is not None:
+                selector.update({"cloud.google.com/reservation-project": cfg.reservation_project})
             labels.update({"bastion-tier": "reserved"})
         else:
             logging.info("Found tier=%s in env. Using spot quota", tier)

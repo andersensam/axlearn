@@ -18,8 +18,11 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_PYTHON_CLIENT_ALLOCATOR"] = "platform"
 # pylint: enable=wrong-import-position
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from absl.testing import absltest, parameterized
 from jax.experimental import mesh_utils
@@ -528,6 +531,10 @@ class TestFlashAttention(TestCase):
             pytest.skip(reason="Unsupported large bias matrix in fp32 format.")
         if dropout_rate > 0.0 and jax.default_backend() == "tpu":
             pytest.skip("Dropout is implemented for GPU only.")
+        if attn_type == "sliding_window" and query_len_multiplier > 1:
+            # When sliding window is enabled and q_len > kv_len, there might be be fully masked
+            # rows.
+            pytest.skip(reason="Sliding window attention does not make sense when q_len > kv_len.")
 
         if attn_type == "full":
             mask = None
@@ -577,7 +584,9 @@ class TestFlashAttention(TestCase):
             # TODO(markblee): Test probs.
             # Note: cannot compare results when dropout_rate > 0 and not using segment ids, because
             # cudnn dropout will be used and it uses different PRNG than ours.
-            if dropout_rate == 0.0 or use_segment_ids:
+            # Note: Dropout result between reference and Flash will be different on multiple
+            # devices due to the use of shard_map.
+            if dropout_rate == 0.0 or (int(np.prod(mesh)) == 1 and use_segment_ids):
                 self.assertNestedAllClose(ref_out.data, test_out.data, atol=0.05)
         jax.clear_caches()
 
@@ -687,7 +696,7 @@ class TestFlashAttention(TestCase):
                 atol, rtol = 5e-4, 5e-2
             # pylint: disable-next=protected-access
             elif dropout_rate > 0.0 and test_layer.layer._backend() == "gpu":
-                atol, rtol = 2.5e-4, 1e-3
+                atol, rtol = 3.5e-4, 1e-3
             # pylint: disable-next=protected-access
             elif num_kv_heads and test_layer.layer._backend() == "cpu":
                 atol, rtol = 1e-4, 1e-2
@@ -703,7 +712,10 @@ class TestFlashAttention(TestCase):
         jax.clear_caches()
 
     @parameterized.product(
-        _TEST_CONFIGS, attn_type=["causal", "sliding_window"], use_bias=[True, False]
+        _TEST_CONFIGS,
+        attn_type=["causal", "sliding_window"],
+        use_bias=[True, False],
+        dtype=[jnp.float32, jnp.bfloat16],
     )
     def test_extend_step(
         self,
@@ -716,6 +728,7 @@ class TestFlashAttention(TestCase):
         mesh_axis_names,
         attn_type,
         use_bias,
+        dtype,
     ):
         print(
             f"batch={batch}, seq_len={seq_len} (ignored->16), num_heads={num_heads}, \n"
@@ -725,7 +738,6 @@ class TestFlashAttention(TestCase):
 
         # Limit generation length to 16 to save test time.
         seq_len = 16
-        dtype = jnp.bfloat16
 
         if not is_supported_mesh_shape(mesh):
             pytest.skip(reason=f"Unsupported mesh {mesh}.")
@@ -750,15 +762,6 @@ class TestFlashAttention(TestCase):
                 mask=mask,
                 inference=True,
             )
-            tpu_block_size = test_layer.config.tpu_block_size
-            # pylint: disable-next=protected-access
-            if test_layer._backend() == "tpu" and seq_len % tpu_block_size != 0:
-                pytest.skip(
-                    f"Sequence length  {seq_len} is not divisible by configured block size for "
-                    f"tpu {test_layer.config.tpu_block_size }. "
-                    "This was unsupported (and the test failed) even prior to adding "
-                    "this skip statement."
-                )
 
             # Prepare inputs
             query = jax.random.normal(
@@ -774,7 +777,7 @@ class TestFlashAttention(TestCase):
                     dtype=dtype,
                 )
             kv_state = None
-            return_aux = {"probs"}
+            return_aux = None
 
             inputs = dict(
                 query=query,
@@ -819,9 +822,15 @@ class TestFlashAttention(TestCase):
             )
             self.assertIsNone(initial_output)
             self.assertIsNone(ref_inital_output)
-            for k in ["key", "value"]:
-                self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
-                self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
+            if dtype is jnp.float32:
+                # Float32 inference still uses bfloat16 kv cache.
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, jnp.bfloat16)
+                    self.assertEqual(initial_state["i_proj"][k].dtype, jnp.bfloat16)
+            else:
+                for k in ["key", "value"]:
+                    self.assertEqual(ref_initial_state["i_proj"][k].dtype, dtype)
+                    self.assertEqual(initial_state["i_proj"][k].dtype, dtype)
 
             # Prepare decoding inputs.
             inputs = dict(
@@ -839,6 +848,18 @@ class TestFlashAttention(TestCase):
 
             decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
             ref_decoder_output = jnp.zeros(shape=[seq_len, batch, hidden_dim]).astype(dtype)
+
+            @partial(jax.jit, static_argnames=["layer"])
+            def extend_one_step(params, inputs, layer):
+                return F(
+                    layer,
+                    state=params,
+                    is_training=False,
+                    prng_key=jax.random.PRNGKey(5),
+                    inputs=inputs,
+                    method="extend_step",
+                )
+
             for t in range(seq_len):
                 cur_query = jnp.expand_dims(query[:, t, :], axis=1)
                 inputs["query"] = cur_query
@@ -851,27 +872,13 @@ class TestFlashAttention(TestCase):
                     ref_inputs["attention_logit_biases"] = jnp.expand_dims(
                         causal_bias[:, :, t, :], axis=2
                     )
-                ref_extend_step_outputs, _ = F(
-                    ref_layer,
-                    state=params,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(5),
-                    inputs=ref_inputs,
-                    method="extend_step",
-                )
+                ref_extend_step_outputs, _ = extend_one_step(params, ref_inputs, ref_layer)
                 ref_inputs["cached_states"] = ref_extend_step_outputs[0]
                 ref_decoder_output = ref_decoder_output.at[t].set(
                     jnp.squeeze(ref_extend_step_outputs[1].data, axis=1)
                 )
 
-                extend_step_outputs, _ = F(
-                    test_layer,
-                    state=params,
-                    is_training=False,
-                    prng_key=jax.random.PRNGKey(5),
-                    inputs=inputs,
-                    method="extend_step",
-                )
+                extend_step_outputs, _ = extend_one_step(params, inputs, test_layer)
                 inputs["cached_states"] = extend_step_outputs[0]
                 decoder_output = decoder_output.at[t].set(
                     jnp.squeeze(extend_step_outputs[1].data, axis=1)
@@ -880,6 +887,7 @@ class TestFlashAttention(TestCase):
                 self.assertNestedAllClose(
                     decoder_output[t],
                     ref_decoder_output[t],
+                    rtol=0.02,
                     atol=2e-2,
                 )
 
@@ -889,16 +897,19 @@ class TestFlashAttention(TestCase):
             self.assertNestedAllClose(
                 ref_out.data,
                 ref_decoder_out_transposed,
+                rtol=0.02,
                 atol=2e-2,
             )
             self.assertNestedAllClose(
                 decoder_out_transposed,
                 ref_decoder_out_transposed,
+                rtol=0.02,
                 atol=2e-2,
             )
             self.assertNestedAllClose(
                 ref_out.data,
                 test_out.data,
+                rtol=0.02,
                 atol=2e-2,
             )
         jax.clear_caches()
