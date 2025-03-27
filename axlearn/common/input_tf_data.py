@@ -16,12 +16,12 @@ import seqio
 import tensorflow as tf
 import tensorflow_datasets as tfds
 
-try:
-    # Necessary for S3 access. See, e.g: https://github.com/tensorflow/tensorflow/issues/51583
-    # pytype: disable=import-error
-    import tensorflow_io as tfio  # pylint: disable=unused-import
-except ImportError:
-    pass
+#try:
+#    # Necessary for S3 access. See, e.g: https://github.com/tensorflow/tensorflow/issues/51583
+#    # pytype: disable=import-error
+#    import tensorflow_io as tfio  # pylint: disable=unused-import
+#except ImportError:
+#    pass
 
 from absl import logging
 from jax import numpy as jnp

@@ -57,6 +57,7 @@ from axlearn.cloud.gcp.jobset_utils import (
     A3HighReplicatedJob,
     A3UltraReplicatedJob,
     A4HighReplicatedJob,
+    A3MegaReplicatedJob,
 )
 from axlearn.cloud.gcp.node_pool import (
     PRE_PROVISIONER_LABEL,
@@ -628,8 +629,10 @@ def _get_runner_or_exit(instance_type: str):
         return GKERunnerJob.with_inner(GKEJob.with_builder(A3UltraReplicatedJob))
     elif instance_type.startswith("gpu-a3-high"):
         return GKERunnerJob.with_inner(GKEJob.with_builder(A3HighReplicatedJob))
-    elif instance_type.startswith("a4-highgpu"):
+    elif instance_type.startswith("gpu-a4-high"):
         return GKERunnerJob.with_inner(GKEJob.with_builder(A4HighReplicatedJob))
+    elif instance_type.startswith("gpu-a3-mega"):
+        return GKERunnerJob.with_inner(GKEJob.with_builder(A3MegaReplicatedJob))
     else:
         raise app.UsageError(f"Unknown instance_type {instance_type}")
 

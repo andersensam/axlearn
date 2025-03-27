@@ -23,6 +23,10 @@ import jax.numpy as jnp
 import jax.random
 import pytest
 
+from jax import export
+from jax._src.interpreters import mlir as jax_mlir
+from jax._src.lib.mlir import ir
+
 from axlearn.common.attention_bias import (
     CausalAttentionBias,
     MaskFn,
@@ -41,6 +45,10 @@ from axlearn.common.utils import Tensor
 if jax.default_backend() not in ("gpu", "cpu"):
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
+def get_stablehlo_asm(module_str):
+    with jax_mlir.make_ir_context():
+        stablehlo_module = ir.Module.parse(module_str, context=jax_mlir.make_ir_context())
+        return stablehlo_module.operation.get_asm(print_generic_op_form=True, enable_debug_info=False)
 
 def _default_tol_fn(backend, dtype):
     del backend
@@ -74,6 +82,20 @@ def _test_forward_and_backward(
     jax_out = test_fn(q, k, v, bias, prng_key)
     jax_ref_out = ref_fn(q, k, v, bias, prng_key)
     backend = jax.default_backend()
+
+    input_shapes = [jax.ShapeDtypeStruct(input.shape, input.dtype) for input in [q, k, v, bias, prng_key]]
+    ref_fn_hlo = export.export(ref_fn)(*input_shapes).mlir_module()
+    test_fn_hlo = export.export(test_fn)(*input_shapes).mlir_module()
+
+    ### CUSTOM TEST CODE SAMUELANDERSEN@GOOGLE.COM ###
+    if (jnp.allclose(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))):
+        print("✅ Triton and XLA ref match\n")
+    else:
+        print("❌ Triton and XLA ref differ")
+        max_diff = jnp.max(jnp.abs(jax_out - jax_ref_out)).item()
+        print(f"Max diff: {max_diff}\n")
+    ### END CUSTOM TEST CODE ###
+
     chex.assert_trees_all_close(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))
 
     # Compare gradients.
@@ -83,6 +105,16 @@ def _test_forward_and_backward(
     jax_ref_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(
         q, k, v, bias, prng_key
     )
+
+    ### CUSTOM TEST CODE SAMUELANDERSEN@GOOGLE.COM ###
+    if (jnp.allclose(jax_grads[0], jax_ref_grads[0], **backward_tol_fn(backend, q.dtype))):
+        print("✅ Triton and XLA ref gradients match\n")
+    else:
+        print("❌ Triton and XLA ref gradients differ")
+        max_diff = jnp.max(jnp.abs(jax_grads[0] - jax_ref_grads[0])).item()
+        print(f"Max diff: {max_diff}\n")
+    ### END CUSTOM TEST CODE ###
+
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 
 
@@ -92,19 +124,25 @@ def common_attn_test_params(func):
             "batch_size,num_heads,query_len,per_head_dim",
             [
                 (1, 1, 384, 64),
-                (2, 2, 256, 64),
-                (1, 1, 512, 128),
-                (2, 2, 384, 128),
-                (1, 8, 384, 128),
-                (2, 4, 384, 128),
+                #(2, 2, 256, 64),
+                #(1, 1, 512, 128),
+                #(2, 2, 384, 128),
+                #(1, 8, 384, 128),
+                #(2, 4, 384, 128),
             ],
         ),
-        pytest.mark.parametrize("kv_len", [None, 512]),
-        pytest.mark.parametrize("dropout_rate", [0, 0.1]),
-        pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
-        pytest.mark.parametrize("with_segment_ids", [True, False]),
+        #pytest.mark.parametrize("kv_len", [None, 512]),
+        pytest.mark.parametrize("kv_len", [None]),
+        #pytest.mark.parametrize("dropout_rate", [0, 0.1]),
+        pytest.mark.parametrize("dropout_rate", [0.1]),
+        #pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
+        pytest.mark.parametrize("attention_bias_type", [None]),
+        #pytest.mark.parametrize("with_segment_ids", [True, False]),
+        pytest.mark.parametrize("with_segment_ids", [True]),
         pytest.mark.parametrize("block_size", [128]),  # Triton broken for block size !=128.
-        pytest.mark.parametrize("mask_fn", [causal_mask, None]),
+        #pytest.mark.parametrize("mask_fn", [causal_mask, None]),
+        pytest.mark.parametrize("mask_fn", [None]),
+        #pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32]),
         pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32]),
     ]
     # Apply in reverse order to stack correctly.

@@ -407,6 +407,10 @@ def _flash_attention_impl(
                 shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
             ),  # lse
         ]
+    print(f"gpu_attention.py: Calling kernel: mha_forward", file=sys.stderr)
+    print(f"gpu_attention.py: Q.dtype: {query.dtype}. K.dtype: {key.dtype}. V.dtype: {value.dtype}", file=sys.stderr)
+    print(f"gpu_attention.py: Q.shape: {query.shape}. K.shape: {key.shape}. V.shape: {value.shape}", file=sys.stderr)
+    print(f"gpu_attention.py: Grid: {grid}")
     pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
@@ -414,7 +418,7 @@ def _flash_attention_impl(
         out_specs=out_specs,
         compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         out_shape=out_shape,
-        debug=debug,
+        debug=True,
         interpret=interpret,
         name="mha_forward",
     )(query, key, value, bias, segment_ids, dropout_mask, index_offset, index_offset_size)
@@ -750,7 +754,7 @@ def _mha_backward(
             grid=grid,
             out_specs=out_specs,
             name=kernel.__name__,
-            debug=debug,
+            debug=True,
             interpret=interpret,
             compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)

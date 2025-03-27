@@ -1086,14 +1086,14 @@ class A3HighReplicatedJob(GPUReplicatedJob):
 
         env_vars.update(
             {
-                "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                "LD_LIBRARY_PATH": "/usr/local/nvidia/lib64",
                 # Set to 0 to encourage rail alignment.
                 "NCCL_CROSS_NIC": "0",
                 # TCPX only supports Ring algorithm.
                 "NCCL_ALGO": "Ring",
                 # TCPX only supports Simple protocol.
                 "NCCL_PROTO": "Simple",
-                "NCCL_DEBUG": "WARN",
+                "NCCL_DEBUG": "INFO",
                 "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
                 # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                 "NCCL_NET_GDR_LEVEL": "PIX",
@@ -1124,6 +1124,199 @@ class A3HighReplicatedJob(GPUReplicatedJob):
                 "NCCL_SOCKET_IFNAME": "eth0",
                 # TCPX is not compatible with NVLS.
                 "NCCL_NVLS_ENABLE": "0",
+            }
+        )
+
+        # Override env vars with user provided env vars.
+        env_vars.update(cfg.env_vars)
+        # K8s expects each env variable to be a dict.
+        k8s_env_vars = [{"name": name, "value": value} for name, value in env_vars.items()]
+        k8s_env_vars.append(
+            {
+                "name": "PROCESS_ID",
+                "valueFrom": {
+                    "fieldRef": {
+                        "fieldPath": (
+                            "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+                        ),
+                    }
+                },
+            },
+        )
+
+        user_cmd = cfg.command
+        if user_cmd is None:
+            raise ValueError("Command should not be None.")
+        user_cmd += "; touch /run/tcpx/terminated"
+        command = ["bash", "-c", user_cmd]
+
+        return dict(
+            name=cfg.name,
+            image=self._bundler.id(cfg.name),
+            ports=[
+                dict(containerPort=8080),  # Port for MXLA coordinator.
+            ],
+            securityContext=dict(privileged=True),
+            # TODO(markblee): Improve SIGTERM behavior for command.
+            command=command,
+            resources=dict(limits={"nvidia.com/gpu": "8"}),
+            env=k8s_env_vars,
+            volumeMounts=volume_mounts,
+        )
+
+    def _build_tcpx_nccl_plugin_init_container(self) -> Nested[Any]:
+        """Builds a config for a single container."""
+        volume_mounts = [
+            {
+                "name": "tcpx-nccl-plugin-volume",
+                "mountPath": "/var/lib/tcpx",
+            },
+        ]
+        command = ["bash", "-c", "/scripts/container_entry.sh install"]
+        return dict(
+            name="tcpx-nccl-plugin-installer",
+            image=(
+                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/nccl-plugin-gpudirecttcpx-dev:v3.1.7"
+            ),
+            command=command,
+            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            volumeMounts=volume_mounts,
+        )
+
+class A3MegaReplicatedJob(GPUReplicatedJob):
+    """Builds a replicated job spec for A3 High GPU job, to be used with JobSet API."""
+
+    def _build_volumes(self) -> list[Nested[Any]]:
+        """Builds a config for volumes."""
+
+        volumes = super()._build_volumes()
+        volumes += [
+            {
+                "name": "tcpx-socket",
+                "emptyDir": {},
+            },
+            {
+                "name": "tcpx-nccl-plugin-volume",
+                "emptyDir": {},
+            },
+        ]
+
+        return volumes
+
+    def _build_init_containers(self) -> list[Nested[Any]]:
+        return [self._build_tcpx_sidecar_container(), self._build_tcpx_nccl_plugin_init_container()]
+
+    def _build_tcpx_sidecar_container(self) -> Nested[Any]:
+        """Builds a sidecar container which is required by A3
+        for GPU to GPU RDMA like networking.
+
+        Returns:
+            A nested dict of the sidecar container.
+        """
+        volume_mounts = [
+            {
+                "name": "nvidia-install-dir-host",
+                "mountPath": "/usr/local/nvidia/lib64",
+            },
+            {
+                "name": "tcpx-socket",
+                "mountPath": "/run/tcpx",
+            },
+        ]
+
+        command = [
+            "bash",
+            "-c",
+            'set -x; /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm  \
+                --gpu_shmem_type fd --uds_path /run/tcpx \
+                --setup_param "--verbose 128 2 0" & \n\
+            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;',
+        ]
+
+        return dict(
+            name="tcpx-daemon",
+            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/tcpgpudmarxd-dev:v2.0.11",
+            securityContext={"privileged": True},
+            command=command,
+            env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
+            volumeMounts=volume_mounts,
+            restartPolicy="Always",
+        )
+
+    def _build_main_container(self) -> Nested[Any]:
+        """Builds the config for the container running the job.
+
+        Returns:
+            A nested dict corresponding to a k8s Container config.
+        """
+        cfg: A3MegaReplicatedJob.Config = self.config
+
+        volume_mounts = [
+            {"name": "shared-memory", "mountPath": "/dev/shm"},
+            {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
+            {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
+            {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
+        ]
+
+        env_vars: dict[str, str] = {}
+        env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
+        env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
+
+        default_xla_flags = [
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
+            # Allows combining multiple all reduce into single all reduce.
+            # "--xla_gpu_all_reduce_contiguous",
+            # Increase combine threshold to 1GB for improved performance.
+            # A3 and TCPX performs bad with smaller message sizes.
+            "--xla_gpu_all_reduce_combine_threshold_bytes=1073741824",
+            "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
+        ]
+        env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
+
+        env_vars.update(
+            {
+                # Ensure the TCPX libs get picked up
+                "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                # Set to 0 to encourage rail alignment.
+                "NCCL_CROSS_NIC": "0",
+                # TCPX only supports Ring algorithm.
+                "NCCL_ALGO": "Ring",
+                # TCPX only supports Simple protocol.
+                "NCCL_PROTO": "Simple",
+                "NCCL_DEBUG": "INFO",
+                "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
+                # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
+                "NCCL_NET_GDR_LEVEL": "PIX",
+                # TCPX requires disabling PXN.
+                "NCCL_P2P_PXN_LEVEL": "0",
+                # The NCCL_GPU_DIRECTTCPX variables can not be tweaked.
+                "NCCL_GPUDIRECTTCPX_FORCE_ACK": "0",
+                "NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP": "1000",
+                "NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS": "1000000",
+                "NCCL_GPUDIRECTTCPX_TX_BINDINGS": (
+                    "eth1:8-21,112-125;eth2:8-21,112-125;eth3:60-73,164-177;eth4:60-73,164-177"
+                ),
+                "NCCL_GPUDIRECTTCPX_RX_BINDINGS": (
+                    "eth1:22-35,124-139;eth2:22-35,124-139;eth3:74-87,178-191;eth4:74-87,178-191"
+                ),
+                "NCCL_GPUDIRECTTCPX_SOCKET_IFNAME": "eth1,eth2,eth3,eth4",
+                "NCCL_GPUDIRECTTCPX_CTRL_DEV": "eth0",
+                "NCCL_GPUDIRECTTCPX_UNIX_CLIENT_PREFIX": "/run/tcpx",
+                # Improves performance but can be tweaked.
+                "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
+                "NCCL_P2P_NET_CHUNKSIZE": "524288",
+                "NCCL_P2P_PCI_CHUNKSIZE": "524288",
+                "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
+                # The number of sockets per thread improves performance.
+                "NCCL_NSOCKS_PERTHREAD": "4",
+                "NCCL_SOCKET_NTHREADS": "1",
+                # Use the system NIC for NCCL control plane comms.
+                "NCCL_SOCKET_IFNAME": "eth0",
+                # TCPX is not compatible with NVLS.
+                "NCCL_NVLS_ENABLE": "0",
+                # The a3plus (mega) tuner config is needed to function properly
+                "NCCL_TUNER_CONFIG_PATH": "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto",
             }
         )
 

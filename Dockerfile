@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=python:3.10-slim
+ARG BASE_IMAGE=docker.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 FROM ${BASE_IMAGE} AS base
 
@@ -14,8 +14,7 @@ RUN apt-get update && apt-get install -y curl gnupg
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
-    apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli
+    apt-get install -y apt-transport-https ca-certificates screen google-perftools google-cloud-cli python3.12 python3.12-venv python3.12-dev
 
 # Setup.
 RUN mkdir -p /root
@@ -26,7 +25,8 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv ${VIRTUAL_ENV}
+
+RUN python3.12 -m venv ${VIRTUAL_ENV}
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install flit pytest
@@ -75,7 +75,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.12_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
@@ -102,23 +102,20 @@ FROM base AS gpu
 # Needed for NVIDIA CX7 based RDMA (not cloud specific).
 RUN apt-get update && apt-get install -y ibverbs-utils
 
-# Add custom wheels
-#ADD image/wheels.tar.gz /tmp/wheels/
-
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html"
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html /tmp/triton /tmp/tensorflow"
 ENV JAX_TRACEBACK_FILTERING=off
+
+# Copy Triton and TensorFlow wheels
+COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-triton/3.3.0:3121ad5 /tmp/triton /tmp/triton
+COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-triton/3.3.0:3121ad5 /tmp/pytorch /tmp/pytorch
+COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-tensorflow/blackwell@sha256:e1824ea5bac828327b93a6ecf9c9daadd7cf0c92d70861f1289e8eb561f16bb6 /tmp/tensorflow /tmp/tensorflow
+
 RUN pip install .[core,gpu]
-
-
-# Install Triton 3.3.0 custom build
-COPY --from=triton-3.3.0:01bb1d7 /tmp/staging/triton/python/dist /tmp/triton
-RUN pip install /tmp/triton/*.whl
-RUN rm -rf /tmp/triton
-# End Triton install
+#RUN pip install /tmp/tensorflow/*.whl
 
 COPY . .
-RUN rm -rf image venv
+RUN rm -rf venv .git image
 
 ################################################################################
 # Final target spec.                                                           #
