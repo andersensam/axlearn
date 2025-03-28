@@ -789,7 +789,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         env_vars: dict[str, str] = {}
         env_vars["DISTRIBUTED_COORDINATOR"] = f"{cfg.name}-job-0-0.{cfg.name}:8080"
         env_vars["NUM_PROCESSES"] = f"{cfg.accelerator.num_replicas}"
-        env_vars["LD_LIBRARY_PATH"] = "/usr/local/nvidia/lib64"
+        env_vars["LD_LIBRARY_PATH"] = "/usr/local/gib/lib64:/usr/local/nvidia/lib64"
 
         default_xla_flags = [
             # Maxtext XLA flags:
@@ -828,9 +828,9 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "NCCL_SOCKET_IFNAME": "=eth0,eth1",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
-                "NCCL_P2P_NET_CHUNKSIZE": "65536",
-                "NCCL_P2P_PCI_CHUNKSIZE": "65536",
-                "NCCL_P2P_NVL_CHUNKSIZE": "262144",
+                "NCCL_P2P_NET_CHUNKSIZE": "131072",
+                "NCCL_P2P_PCI_CHUNKSIZE": "131072",
+                "NCCL_P2P_NVL_CHUNKSIZE": "524288",
                 "NCCL_NVLS_CHUNKSIZE": "524288",
                 "NCCL_IB_GID_INDEX": "3",
                 "NCCL_IB_ADAPTIVE_ROUTING": "1",
@@ -840,7 +840,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
                     "/usr/local/gib/configs/guest_config.txtpb"
                 ),
-                "NCCL_TUNER_CONFIG_PATH": "/usr/local/gib/configs/tuner_config.txtpb",
+                "NCCL_TUNER_CONFIG_PATH": "/usr/local/gib/configs/tuner_config_a4.txtpb",
             }
         )
 
@@ -1284,7 +1284,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "NCCL_ALGO": "Ring",
                 # TCPX only supports Simple protocol.
                 "NCCL_PROTO": "Simple",
-                "NCCL_DEBUG": "INFO",
+                "NCCL_DEBUG": "WARN",
                 "NCCL_DEBUG_SUBSYS": "INIT,GRAPH,ENV,TUNING,NET,VERSION",
                 # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                 "NCCL_NET_GDR_LEVEL": "PIX",

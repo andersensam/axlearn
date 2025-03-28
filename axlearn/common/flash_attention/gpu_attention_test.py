@@ -83,10 +83,6 @@ def _test_forward_and_backward(
     jax_ref_out = ref_fn(q, k, v, bias, prng_key)
     backend = jax.default_backend()
 
-    input_shapes = [jax.ShapeDtypeStruct(input.shape, input.dtype) for input in [q, k, v, bias, prng_key]]
-    ref_fn_hlo = export.export(ref_fn)(*input_shapes).mlir_module()
-    test_fn_hlo = export.export(test_fn)(*input_shapes).mlir_module()
-
     ### CUSTOM TEST CODE SAMUELANDERSEN@GOOGLE.COM ###
     if (jnp.allclose(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))):
         print("✅ Triton and XLA ref match\n")
@@ -124,26 +120,20 @@ def common_attn_test_params(func):
             "batch_size,num_heads,query_len,per_head_dim",
             [
                 (1, 1, 384, 64),
-                #(2, 2, 256, 64),
-                #(1, 1, 512, 128),
-                #(2, 2, 384, 128),
-                #(1, 8, 384, 128),
-                #(2, 4, 384, 128),
+                (2, 2, 256, 64),
+                (1, 1, 512, 128),
+                (2, 2, 384, 128),
+                (1, 8, 384, 128),
+                (2, 4, 384, 128),
             ],
         ),
-        #pytest.mark.parametrize("kv_len", [None, 512]),
-        pytest.mark.parametrize("kv_len", [None]),
-        #pytest.mark.parametrize("dropout_rate", [0, 0.1]),
-        pytest.mark.parametrize("dropout_rate", [0.1]),
-        #pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
-        pytest.mark.parametrize("attention_bias_type", [None]),
-        #pytest.mark.parametrize("with_segment_ids", [True, False]),
-        pytest.mark.parametrize("with_segment_ids", [True]),
+        pytest.mark.parametrize("kv_len", [None, 512]),
+        pytest.mark.parametrize("dropout_rate", [0, 0.1]),
+        pytest.mark.parametrize("attention_bias_type", [None, "2d", "4d"]),
+        pytest.mark.parametrize("with_segment_ids", [True, False]),
         pytest.mark.parametrize("block_size", [128]),  # Triton broken for block size !=128.
-        #pytest.mark.parametrize("mask_fn", [causal_mask, None]),
-        pytest.mark.parametrize("mask_fn", [None]),
-        #pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32]),
-        pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32]),
+        pytest.mark.parametrize("mask_fn", [causal_mask, None]),
+        pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16, jnp.float32]),
     ]
     # Apply in reverse order to stack correctly.
     for param in reversed(params):
@@ -297,8 +287,7 @@ def test_sliding_window_mask(
     ],
 )
 @pytest.mark.parametrize("causal", [True, False])
-#@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
-@pytest.mark.parametrize("dtype", [jnp.float16])
+@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float16])
 def test_cudnn_against_triton_ref(
     batch_size: int,
     num_heads: int,

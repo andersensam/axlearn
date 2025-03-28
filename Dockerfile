@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y curl gnupg
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
-    apt-get install -y apt-transport-https ca-certificates screen google-perftools google-cloud-cli python3.12 python3.12-venv python3.12-dev
+    apt-get install -y apt-transport-https ca-certificates gcc g++ \
+      ca-certificates google-perftools google-cloud-cli ibverbs-utils
 
 # Setup.
 RUN mkdir -p /root
@@ -23,14 +24,18 @@ WORKDIR /root
 COPY README.md README.md
 COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
+
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
 
-RUN python3.12 -m venv ${VIRTUAL_ENV}
+# Copy the Python 3.10 binaries from the builder image
+COPY --from=python3.10:latest /opt/python3.10 /opt/python3.10
+RUN /opt/python3.10/bin/python3.10 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 # Install dependencies.
-RUN pip install flit pytest
 RUN pip install --upgrade pip
+RUN pip install flit pytest pytest-instafail
 
 ################################################################################
 # CI container spec.                                                           #
@@ -75,7 +80,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.12_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
@@ -99,23 +104,12 @@ COPY . .
 
 FROM base AS gpu
 
-# Needed for NVIDIA CX7 based RDMA (not cloud specific).
-RUN apt-get update && apt-get install -y ibverbs-utils
-
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html /tmp/triton /tmp/tensorflow"
-ENV JAX_TRACEBACK_FILTERING=off
-
-# Copy Triton and TensorFlow wheels
-COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-triton/3.3.0:3121ad5 /tmp/triton /tmp/triton
-COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-triton/3.3.0:3121ad5 /tmp/pytorch /tmp/pytorch
-COPY --from=us-central1-docker.pkg.dev/supercomputer-testing/axlearn-tensorflow/blackwell@sha256:e1824ea5bac828327b93a6ecf9c9daadd7cf0c92d70861f1289e8eb561f16bb6 /tmp/tensorflow /tmp/tensorflow
-
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html" JAX_TRACEBACK_FILTERING=off
 RUN pip install .[core,gpu]
-#RUN pip install /tmp/tensorflow/*.whl
 
 COPY . .
-RUN rm -rf venv .git image
+RUN rm -rf image venv
 
 ################################################################################
 # Final target spec.                                                           #

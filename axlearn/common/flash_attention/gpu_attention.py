@@ -67,6 +67,13 @@ from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor
 
+### A4 platform specific code ###
+import os
+IS_A4_PLATFORM = False
+if "NCCL_TUNER_CONFIG_PATH" in os.environ:
+    if "/usr/local/gib/configs/tuner_config_a4.txtpb" in os.environ["NCCL_TUNER_CONFIG_PATH"]:
+        IS_A4_PLATFORM = True
+### End A4 platform specific code ###
 
 class NoPopDict(dict):
     """A dict that doesn't delete after pop.
@@ -408,9 +415,9 @@ def _flash_attention_impl(
             ),  # lse
         ]
     print(f"gpu_attention.py: Calling kernel: mha_forward", file=sys.stderr)
-    print(f"gpu_attention.py: Q.dtype: {query.dtype}. K.dtype: {key.dtype}. V.dtype: {value.dtype}", file=sys.stderr)
-    print(f"gpu_attention.py: Q.shape: {query.shape}. K.shape: {key.shape}. V.shape: {value.shape}", file=sys.stderr)
-    print(f"gpu_attention.py: Grid: {grid}")
+    print(f"gpu_attention.py: mha_forward Q.dtype: {query.dtype}. K.dtype: {key.dtype}. V.dtype: {value.dtype}", file=sys.stderr)
+    print(f"gpu_attention.py: mha_forward Q.shape: {query.shape}. K.shape: {key.shape}. V.shape: {value.shape}", file=sys.stderr)
+    print(f"gpu_attention.py: mha_forward Grid: {grid}")
     pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
@@ -418,7 +425,7 @@ def _flash_attention_impl(
         out_specs=out_specs,
         compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         out_shape=out_shape,
-        debug=True,
+        debug=debug,
         interpret=interpret,
         name="mha_forward",
     )(query, key, value, bias, segment_ids, dropout_mask, index_offset, index_offset_size)
@@ -651,6 +658,12 @@ def _mha_backward(
     if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if bias is None else bias.dtype):
         block_q = block_k = 32
 
+    ### A4 specific platform modification to block_q and block_k ###
+    if IS_A4_PLATFORM:
+        if jnp.float16 in (q.dtype, k.dtype, v.dtype) or jnp.bfloat16 in (q.dtype, k.dtype, v.dtype):
+            block_q = block_k = 64
+    ### End A4 specific platform modficiation ###
+
     batch_size, q_seq_len, num_heads, head_dim = q.shape
     kv_seq_len = k.shape[1]
     block_q = min(block_q, q_seq_len)
@@ -737,9 +750,12 @@ def _mha_backward(
         *, kernel, grid, out_shape, in_specs, out_specs, index_offset, index_offset_size
     ):
         print(f"gpu_attention.py: Calling kernel: {kernel.__name__}", file=sys.stderr)
-        print(f"gpu_attention.py: Q.dtype: {q.dtype}. K.dtype: {k.dtype}. V.dtype: {v.dtype}", file=sys.stderr)
-        print(f"gpu_attention.py: Q.shape: {q.shape}. K.shape: {k.shape}. V.shape: {v.shape}", file=sys.stderr)
-        print(f"gpu_attention.py: Grid: {grid}")
+        print(f"gpu_attention.py: {kernel.__name__} Q.dtype: {q.dtype}. K.dtype: {k.dtype}. V.dtype: {v.dtype}", file=sys.stderr)
+        print(f"gpu_attention.py: {kernel.__name__} Q.shape: {q.shape}. K.shape: {k.shape}. V.shape: {v.shape}", file=sys.stderr)
+        print(f"gpu_attention.py: {kernel.__name__} Grid: {grid}")
+        print(f"gpu_attention.py: {kernel.__name__} in_spec: {in_specs}")
+        print(f"gpu_attention.py: {kernel.__name__} block_q: {block_q}. block_k: {block_k}")
+        print(f"gpu_attention.py: {kernel.__name__} num_warps: {num_warps}")
         return pl.pallas_call(
             functools.partial(
                 kernel,
@@ -754,7 +770,7 @@ def _mha_backward(
             grid=grid,
             out_specs=out_specs,
             name=kernel.__name__,
-            debug=True,
+            debug=debug,
             interpret=interpret,
             compiler_params=NoPopDict(triton=NoPopDict(num_warps=num_warps, num_stages=num_stages)),
         )(q, k, v, bias, segment_ids, dropout_mask, do, lse, delta, index_offset, index_offset_size)
