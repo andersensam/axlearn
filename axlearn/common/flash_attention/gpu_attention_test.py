@@ -83,15 +83,6 @@ def _test_forward_and_backward(
     jax_ref_out = ref_fn(q, k, v, bias, prng_key)
     backend = jax.default_backend()
 
-    ### CUSTOM TEST CODE SAMUELANDERSEN@GOOGLE.COM ###
-    if (jnp.allclose(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))):
-        print("✅ Triton and XLA ref match\n")
-    else:
-        print("❌ Triton and XLA ref differ")
-        max_diff = jnp.max(jnp.abs(jax_out - jax_ref_out)).item()
-        print(f"Max diff: {max_diff}\n")
-    ### END CUSTOM TEST CODE ###
-
     chex.assert_trees_all_close(jax_out, jax_ref_out, **forward_tol_fn(backend, q.dtype))
 
     # Compare gradients.
@@ -101,15 +92,6 @@ def _test_forward_and_backward(
     jax_ref_grads = jax.grad(lambda *args: test_fn(*args).mean(), argnums=(0, 1, 2))(
         q, k, v, bias, prng_key
     )
-
-    ### CUSTOM TEST CODE SAMUELANDERSEN@GOOGLE.COM ###
-    if (jnp.allclose(jax_grads[0], jax_ref_grads[0], **backward_tol_fn(backend, q.dtype))):
-        print("✅ Triton and XLA ref gradients match\n")
-    else:
-        print("❌ Triton and XLA ref gradients differ")
-        max_diff = jnp.max(jnp.abs(jax_grads[0] - jax_ref_grads[0])).item()
-        print(f"Max diff: {max_diff}\n")
-    ### END CUSTOM TEST CODE ###
 
     chex.assert_trees_all_close(jax_grads, jax_ref_grads, **backward_tol_fn(backend, q.dtype))
 

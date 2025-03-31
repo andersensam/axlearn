@@ -24,8 +24,8 @@ core = [
     "chex==0.1.88",
     "einops==0.8.0",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3.dev20250319",
-    "jaxlib==0.5.3.dev20250319",
+    "jax==0.5.3",
+    "jaxlib==0.5.3",
     "ml-dtypes==0.4.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
@@ -130,9 +130,9 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton>=2",
-    "jax-cuda12-plugin[with_cuda]==0.5.3.dev20250319",
-    "jax-cuda12-pjrt==0.5.3.dev20250319",
+    "triton>=3.2.0",
+    "jax-cuda12-plugin[with_cuda]==0.5.3",
+    "jax-cuda12-pjrt==0.5.3",
     "nvidia-ml-py==12.570.86",
 ]
 # Open API inference.
