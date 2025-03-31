@@ -1107,7 +1107,7 @@ class MainTest(parameterized.TestCase):
     @parameterized.parameters(
         dict(instance_type="tpu", expected=gke_runner.TPUGKERunnerJob),
         dict(instance_type="tpu-v4-8", expected=gke_runner.TPUGKERunnerJob),
-        dict(instance_type="gpu-a3-highgpu-8g-256", expected=gke_runner.GPUGKERunnerJob),
+        dict(instance_type="gpu-a3-highgpu-8g-256", expected=gke_runner.GKERunnerJob),
         dict(instance_type="gpu", expected=app.UsageError("instance_type")),
     )
     def test_get_runner_or_exit(self, instance_type: str, expected: Union[Exception, type]):
@@ -1124,7 +1124,7 @@ class MainTest(parameterized.TestCase):
     @parameterized.product(
         [
             dict(runner=gke_runner.TPUGKERunnerJob, instance_type="tpu-v4-8"),
-            dict(runner=gke_runner.GPUGKERunnerJob, instance_type="gpu-a3-highgpu-8g-256"),
+            dict(runner=gke_runner.GKERunnerJob, instance_type="gpu-a3-highgpu-8g-256"),
         ],
         action=["start", "stop", "update"],
     )

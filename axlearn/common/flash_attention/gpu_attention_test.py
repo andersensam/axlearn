@@ -16,6 +16,7 @@ PARALLEL_GPU_TEST=1 pytest -n 8 axlearn/common/flash_attention/gpu_attention_tes
 import functools
 from typing import Any, Callable, Literal, Optional
 
+import sys
 import chex
 import jax
 import jax.numpy as jnp
@@ -40,6 +41,10 @@ from axlearn.common.utils import Tensor
 if jax.default_backend() not in ("gpu", "cpu"):
     pytest.skip(reason="Incompatible hardware", allow_module_level=True)
 
+def get_stablehlo_asm(module_str):
+    with jax_mlir.make_ir_context():
+        stablehlo_module = ir.Module.parse(module_str, context=jax_mlir.make_ir_context())
+        return stablehlo_module.operation.get_asm(print_generic_op_form=True, enable_debug_info=False)
 
 def _default_tol_fn(backend, dtype):
     del backend

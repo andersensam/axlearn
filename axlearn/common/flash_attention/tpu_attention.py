@@ -48,7 +48,6 @@ from axlearn.common.flash_attention.common import (
     repeat_kv_heads,
 )
 from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
-from axlearn.common.utils import Tensor
 
 MaskFnOrZero = MaskFnAttentionBias | ZeroAttentionBias
 

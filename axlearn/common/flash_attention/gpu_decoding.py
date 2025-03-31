@@ -59,7 +59,6 @@ from axlearn.common.attention_bias import (
 )
 from axlearn.common.flash_attention.common import BaseSingleStepDecoding
 from axlearn.common.flash_attention.gpu_attention import NoPopDict
-from axlearn.common.utils import Tensor
 
 
 # Note: split_k_seq_len must be a multiple of block_k.

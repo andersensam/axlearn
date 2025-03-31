@@ -138,6 +138,7 @@ class GPUGKEJobTest(TestCase):
             yield cfg, bundler_cfg
 
     @parameterized.product(
+        replicated_job_cls=[A3HighReplicatedJob, A3UltraReplicatedJob],
         service_account=[None, "sa"],
         queue=[None, "queue-name"],
         bundler_cls=[ArtifactRegistryBundler, CloudBuildBundler],

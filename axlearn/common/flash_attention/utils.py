@@ -35,7 +35,6 @@ BACKENDS = dict(
     xla=[ReferenceMHA],
 )
 
-
 def flash_attention_implementation(
     backend: Literal["cpu", "tpu", "gpu", "xla", "neuron"],
     *,

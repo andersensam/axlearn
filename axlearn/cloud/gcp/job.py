@@ -222,9 +222,11 @@ class GPUGKEJob(GKEJob):
     """A GPU job represented as a k8s JobSet.
 
     See also `gke_runner` as an example.
+
+    Builder is set dynamically based on the instance type.
+    e.g. GKEJob.with_builder(A3UltraReplicatedJob))
     """
 
-    builder = A3ReplicatedJob
     Config = GKEJob.Config
 
 

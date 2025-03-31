@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=python:3.10-slim
+ARG BASE_IMAGE=docker.io/nvidia/cuda:12.8.1-devel-ubuntu24.04
 
 FROM ${BASE_IMAGE} AS base
 
@@ -15,7 +15,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
     apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli
+      ca-certificates google-perftools google-cloud-cli ibverbs-utils
 
 # Setup.
 RUN mkdir -p /root
@@ -24,13 +24,18 @@ WORKDIR /root
 COPY README.md README.md
 COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
+
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv $VIRTUAL_ENV
+
+# Copy the Python 3.10 binaries from the builder image
+COPY --from=python3.10:latest /opt/python3.10 /opt/python3.10
+RUN /opt/python3.10/bin/python3.10 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 # Install dependencies.
-RUN pip install flit
 RUN pip install --upgrade pip
+RUN pip install flit pytest pytest-instafail
 
 ################################################################################
 # CI container spec.                                                           #
@@ -100,9 +105,11 @@ COPY . .
 FROM base AS gpu
 
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html" JAX_TRACEBACK_FILTERING=off
 RUN pip install .[core,gpu]
+
 COPY . .
+RUN rm -rf image venv
 
 ################################################################################
 # Final target spec.                                                           #

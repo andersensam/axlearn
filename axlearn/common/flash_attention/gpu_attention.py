@@ -32,6 +32,8 @@ import functools
 from collections.abc import Sequence
 from typing import Any, Optional, Tuple
 
+import sys
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -66,6 +68,13 @@ from axlearn.common.flash_attention.remat import FLASH_ATTN_RESIDUAL_NAME
 from axlearn.common.layers import get_dropout_mask
 from axlearn.common.utils import Tensor
 
+### A4 platform specific code ###
+import os
+IS_A4_PLATFORM = False
+if "NCCL_TUNER_CONFIG_PATH" in os.environ:
+    if "/usr/local/gib/configs/tuner_config_a4.txtpb" in os.environ["NCCL_TUNER_CONFIG_PATH"]:
+        IS_A4_PLATFORM = True
+### End A4 platform specific code ###
 
 class NoPopDict(dict):
     """A dict that doesn't delete after pop.
@@ -413,6 +422,7 @@ def _flash_attention_impl(
                 shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
             ),  # lse
         ]
+
     pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
@@ -653,6 +663,12 @@ def _mha_backward(
     # We must shrink the block size for float32 inputs to avoid OOM during bwd pass.
     if jnp.float32 in (q.dtype, k.dtype, v.dtype, jnp.bfloat16 if bias is None else bias.dtype):
         block_q = block_k = 32
+
+    ### A4 specific platform modification to block_q and block_k ###
+    if IS_A4_PLATFORM:
+        if jnp.float16 in (q.dtype, k.dtype, v.dtype) or jnp.bfloat16 in (q.dtype, k.dtype, v.dtype):
+            block_q = block_k = 64
+    ### End A4 specific platform modficiation ###
 
     batch_size, q_seq_len, num_heads, head_dim = q.shape
     kv_seq_len = k.shape[1]
