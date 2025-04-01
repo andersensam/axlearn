@@ -24,6 +24,7 @@ from axlearn.common.attention import (
     FusedQKVLinear,
     GroupedQKVLinear,
     GroupedQueryAttention,
+    KVCache,
     MultiheadAttention,
     RematRegexSavePatterns,
     RepeatedTransformerLayer,
@@ -43,6 +44,7 @@ from axlearn.common.trainer_config_modifier import (
     ModuleConfigModifier,
     PartitionSpecModifier,
     RematSpecModifier,
+    FP8ConfigModifier,
 )
 from axlearn.common.utils import (
     extended_checkpoint_policies,
@@ -370,7 +372,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=1024,
+            train_batch_size=16,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -467,8 +469,22 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
+                ),
+                # Enable FP8 support on H100/200 and B200
+                (
+                    "gpu-(a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            FP8ConfigModifier.default_config().set(
+                                fp8_amax_history_length=3
+                            ),
+                        ],
+                    ),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
@@ -675,6 +691,10 @@ def get_trainer_kwargs(
                     "gpu-(a3-ultragpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=64),
                 ),
+                (
+                    "gpu-(a3-megagpu-8g)-(256|512|1024)",
+                    mesh_shape_from_axes(data=-1, fsdp=64),
+                ),
                 # v2 on a4-highgpu-8g-256 8x32, step time Xs.
                 # v2 on a4-highgpu-8g-512 8x64, step time Xs.
                 (
@@ -782,14 +802,13 @@ def model_config(
     else:
         atten_cfg = MultiheadAttention.default_config()
         atten_input_linear = FusedQKVLinear.default_config()
-    atten_input_linear.cache_dtype = STEP_DTYPE
     # RoPE embeddings: https://arxiv.org/abs/2104.09864.
     atten_qkv_linear = RoFormerQKVLinear.default_config().set(
-        cache_dtype=STEP_DTYPE,
         input_linear=atten_input_linear,
         rotary_value=False,
     )
     atten_qkv_linear.rope_pos_emb_layer.theta = rope_theta
+    attention_kv_cache = KVCache.default_config().set(cache_dtype=STEP_DTYPE)
 
     cfg = common_model_config(
         num_layers=num_layers,
@@ -805,6 +824,7 @@ def model_config(
         lm_head_cfg=LmHead.default_config() if not shared_lm_head else None,
         attention_cfg=flash_attention_config() if flash_attention else atten_cfg,
         attention_qkv_linear=atten_qkv_linear,
+        attention_kv_cache=attention_kv_cache,
         pad_token_id=pad_token_id,
         eos_token_id=eos_token_id,
     )

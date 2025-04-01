@@ -26,7 +26,9 @@ Compared to the implementation in the JAX repo, we made the following enhancemen
 * Support kv_seq_len != q_seq_len.
 * Support 2D/4D bias.
 * Support dropout.
-* Support arbitrary mask function like Pytorch FlexAttention.
+* Support arbitrary mask function,
+    with speed and memory optimization for sliding window type mask,
+    and memory optimizations for arbitrary mask.
 """
 import functools
 from collections.abc import Sequence
@@ -53,6 +55,7 @@ from axlearn.common.attention_bias import (
     MaskFnAttentionBias,
     SegmentIdAttentionBias,
     SlidingWindowAttentionBias,
+    BaseAttentionBias,
     causal_mask,
     split,
 )
@@ -142,6 +145,7 @@ def _mha_forward_kernel(
     dropout_rate: float,
     block_q: int,
     block_k: int,
+    head_dim: int,
 ):
     """Computes attention outputs for the given block.
 
@@ -165,6 +169,9 @@ def _mha_forward_kernel(
         index_offset_size_ref: The number of valid blocks for each iteration.
         o_ref: Output ref.
         *residual_refs: Residual output refs, e.g. softmax statistics.
+        head_dim: Optional per_head_dim, necessary when per_head_dim cannot be
+            devided by the block size on the final dimension. When not provided, default to be
+            the final dimension of the q_ref.
         **kwargs: See `flash_attention`.
     """
     kv_seq_len = k_ref.shape[0]
@@ -182,12 +189,13 @@ def _mha_forward_kernel(
     l_i = jnp.zeros(block_q, dtype=jnp.float32)
     # acc is the buffer where we accumulate the output on sram.
     o = jnp.zeros((block_q, block_d), dtype=jnp.float32)
+    d_mask = jnp.arange(block_d)[None] < head_dim
 
     # Load q: it will stay in L1 throughout. Indices form a matrix because we
     # read, compute, and write all in 2d chunks. 1 element ~= 1 CUDA thread index.
-    # q tile has shape [block_q, block_d], block_d == head_dim.
+    # q tile has shape [block_q, block_d], block_d >= head_dim and is a power of 2.
     curr_q_slice = pl.dslice(start_q * block_q, block_q)
-    q = q_ref[...]
+    q = pl.load(q_ref, (slice(None), slice(None)), mask=d_mask, other=0)
     q_segment_ids = None if s_ref is None else pl.load(s_ref, (curr_q_slice,))
     # In FlashAttention algorithm 1 there are 2 loops: slow over tiles of kv (size
     # (Bc == block_k here), and fast over blocks of q (size Br == block_q here).
@@ -202,7 +210,7 @@ def _mha_forward_kernel(
         span_k = start_k * block_k + jnp.arange(block_k)
         o_prev, m_prev, l_prev = carry
         curr_k_slice = pl.dslice(start_k * block_k, block_k)
-        k = pl.load(k_ref, (curr_k_slice, slice(None)))
+        k = pl.load(k_ref, (curr_k_slice, slice(None)), mask=d_mask, other=0)
         qk = pl.dot(q, k.T, precision=precision)  # [block_q, block_k].
         if softmax_scale != 1.0:
             qk *= softmax_scale  # [block_q, block_k].
@@ -229,7 +237,7 @@ def _mha_forward_kernel(
         l_curr = s_curr.sum(axis=-1)
         l_next = l_prev_corr + l_curr
         o_prev_corr = correction[:, None] * o_prev
-        v = pl.load(v_ref, (curr_k_slice, pl.dslice(block_d)))
+        v = pl.load(v_ref, (curr_k_slice, slice(None)), mask=d_mask, other=jnp.nan)
         if dropout_rate > 0:
             dropout_mask = pl.load(dropout_mask_ref, (slice(None), curr_k_slice))
             s_curr = jnp.where(dropout_mask, 0, s_curr / (1 - dropout_rate))
@@ -252,7 +260,7 @@ def _mha_forward_kernel(
         lse_ref = residual_refs[0]
         lse_ref[...] = m_i + jnp.log(l_i)
     # Write output to dram.
-    o_ref[...] = o.astype(o_ref.dtype)
+    pl.store(o_ref, (slice(None), slice(None)), val=o.astype(o_ref.dtype), mask=d_mask)
 
 
 # pylint: disable=unused-argument
@@ -333,6 +341,7 @@ def _flash_attention_impl(
     kv_seq_len = key.shape[1]
     block_q = min(block_q, q_seq_len)
     block_k = min(block_k, kv_seq_len)
+    block_d = pl.next_power_of_2(head_dim)
     assert q_seq_len % block_q == 0
     assert kv_seq_len % block_k == 0
     # Heuristics.
@@ -352,12 +361,13 @@ def _flash_attention_impl(
         dropout_rate=dropout_rate,
         block_q=block_q,
         block_k=block_k,
+        head_dim=head_dim,
     )
     out_shape = jax.ShapeDtypeStruct(shape=query.shape, dtype=query.dtype)  # out
     in_specs = [
-        pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, head_dim), lambda _, j, k: (j, 0, k, 0)),
+        pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k: (j, i, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k: (j, 0, k, 0)),
+        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k: (j, 0, k, 0)),
     ]
     if bias is not None:
         assert bias.ndim == 4
@@ -405,7 +415,7 @@ def _flash_attention_impl(
         )
     in_specs.append(index_offset_spec)
     in_specs.append(index_offset_size_spec)
-    out_specs = pl.BlockSpec((None, block_q, None, head_dim), lambda i, j, k: (j, i, k, 0))
+    out_specs = pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k: (j, i, k, 0))
     if output_activations:
         out_specs = [out_specs, pl.BlockSpec((None, None, block_q), lambda i, j, k: (j, k, i))]
         out_shape = [
@@ -414,7 +424,6 @@ def _flash_attention_impl(
                 shape=(batch_size, num_heads, q_seq_len), dtype=jnp.float32
             ),  # lse
         ]
-
     pallas_out = pl.pallas_call(
         kernel,
         grid=grid_,
@@ -439,6 +448,7 @@ def _mha_forward(*args: Any):
     return _flash_attention_impl(*args, output_activations=True)
 
 
+# TODO(lezhi): Add support arbitrary per-head-dim in backward pass.
 def _mha_backward_kernel_dkdv(
     # Inputs.
     q_ref,
@@ -818,8 +828,11 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
 
     _allow_explicit_bias = False
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         if self.cfg.is_decoding:
             if query.shape[1] > 1:
@@ -827,6 +840,8 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
             if not key.shape[1] % 2 == 0:
                 return self._log_unsupported(f"key sequence length {key.shape[1]} is not even.")
         else:
+            # cuDNN has no concept of block size. It only requires the length of query and
+            # key/value to be even.
             if not self._check_block_size(query=query, key=key, block_size=2):
                 return False
         if query.dtype not in (jnp.float16, jnp.bfloat16):
@@ -865,7 +880,15 @@ class CuDNNGPUFlashAttention(BaseFlashAttention):
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         del prng_key
 
         args = dict(
@@ -925,15 +948,16 @@ class PallasGPUFlashAttention(BaseFlashAttention):
     3. Segment ids.
     """
 
-    def is_supported(self, query, key, value, bias):
-        if not super().is_supported(query, key, value, bias):
+    def is_supported(
+        self, *, query: Tensor, key: Tensor, value: Tensor, bias: BaseAttentionBias
+    ) -> bool:
+        """See `BaseFlashAttention.is_supported`."""
+        if not super().is_supported(query=query, key=key, value=value, bias=bias):
             return False
         block_size = self.cfg.gpu_block_size
         head_dim = query.shape[-1]
         if not self._check_block_size(query=query, key=key, block_size=block_size):
             return False
-        if pl.next_power_of_2(head_dim) != head_dim:
-            return self._log_unsupported(f"{head_dim=} is not a power of 2.")
         # TODO(hanzhi-zhou): Currently a head_dim > 128 could lead to SMEM OOM. We could support
         # it by reducing the block size along sequence dim. Support it when needed.
         if head_dim > 128:
@@ -942,7 +966,15 @@ class PallasGPUFlashAttention(BaseFlashAttention):
         return True
 
     @functools.partial(jax.jit, static_argnames=["self"])
-    def __call__(self, query, key, value, bias, prng_key=None):
+    def __call__(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        bias: BaseAttentionBias,
+        prng_key: Optional[Tensor] = None,
+    ) -> Tensor:
+        """See `BaseFlashAttention.__call__`."""
         mask, segment_ids, explicit_bias = split(bias, MaskFnAttentionBias, SegmentIdAttentionBias)
         key = repeat_kv_heads(query.shape[2], key)
         value = repeat_kv_heads(query.shape[2], value)
