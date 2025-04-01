@@ -370,7 +370,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=1024,
+            train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -467,7 +467,7 @@ def get_trainer_kwargs(
                 # v2 on gpu-p5.48xlarge-256, step time: 1.78s/step, MFU 39%.
                 # TODO(kelvin-zou): need to match 1.5s/step perf on TransformerEngine.
                 (
-                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g|a3-ultragpu-8g|a4-highgpu-8g)-(256|512|1024)",
+                    "gpu-(p5.48xlarge|p4de.24xlarge|a3-highgpu-8g|a3-megagpu-8g)-(256|512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=8),
                 ),
                 (
@@ -596,7 +596,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=1.5e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=1024,
+            train_batch_size=train_batch_size,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(fsdp=-1),
             mesh_rules=(
@@ -668,18 +668,6 @@ def get_trainer_kwargs(
                 (
                     "gpu-(p5.48xlarge|p4de.24xlarge)-(512|1024)",
                     mesh_shape_from_axes(data=-1, fsdp=128),
-                ),
-                # v2 on a3-ultragpu-8g-256 8x32, step time 15.493s.
-                # v2 on a3-ultragpu-8g-512 8x64, step time 8.184s.
-                (
-                    "gpu-(a3-ultragpu-8g)-(256|512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=64),
-                ),
-                # v2 on a4-highgpu-8g-256 8x32, step time Xs.
-                # v2 on a4-highgpu-8g-512 8x64, step time Xs.
-                (
-                    "gpu-(a4-highgpu-8g)-(16|256|512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=16),
                 ),
                 (
                     "neuron-(trn2|trn2n).48xlarge-64",
