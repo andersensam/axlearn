@@ -20,7 +20,7 @@ FlashAttention2: https://arxiv.org/abs/2307.08691
 
 Caveats of this implementation:
 * Sequence length must be a multiple of block size (128).
-* Only tested on A100/H100.
+* Only tested on A100/H100 and B200
 
 Compared to the implementation in the JAX repo, we made the following enhancements:
 * Support kv_seq_len != q_seq_len.
