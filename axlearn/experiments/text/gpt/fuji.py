@@ -480,9 +480,9 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
-                            FP8ConfigModifier.default_config().set(
-                                fp8_amax_history_length=3
-                            ),
+                            #FP8ConfigModifier.default_config().set(
+                            #    fp8_amax_history_length=3
+                            #),
                         ],
                     ),
                 ),
@@ -689,7 +689,7 @@ def get_trainer_kwargs(
                 # v2 on a3-ultragpu-8g-512 8x64, step time 8.184s.
                 (
                     "gpu-(a3-ultragpu-8g)-(256|512|1024)",
-                    mesh_shape_from_axes(data=-1, fsdp=64),
+                    mesh_shape_from_axes(data=-1, fsdp=32),
                 ),
                 (
                     "gpu-(a3-megagpu-8g)-(256|512|1024)",

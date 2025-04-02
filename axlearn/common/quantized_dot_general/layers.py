@@ -24,6 +24,8 @@ import functools
 from enum import Enum
 from typing import Optional, Union
 
+import sys
+
 import jax
 from absl import logging
 from aqt.jax.v2.config import DotGeneral, set_context
@@ -288,6 +290,10 @@ class QuantizedDotGeneral(BaseLayer):
         from axlearn.common.quantized_dot_general import fp8_ops
 
         logging.log_first_n(logging.INFO, "Using fp8 delayed scaling.", n=1)
+        print(f"lhs shape: {lhs.shape}", file=sys.stderr)
+        print(f"rhs shape: {rhs.shape}", file=sys.stderr)
+        print(f"fp8scaleparams shape: {((self.parameters[x.value] for x in FP8ScaleParams))}", file=sys.stderr)
+        print(f"fp8amaxhistoryparams shape: {((self.parameters[x.value] for x in FP8AmaxHistoryParams))}", file=sys.stderr)
         return fp8_ops.q_dot_dq_delayed(
             lhs,
             rhs,

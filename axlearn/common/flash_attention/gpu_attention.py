@@ -34,8 +34,6 @@ import functools
 from collections.abc import Sequence
 from typing import Any, Optional, Tuple
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import numpy as np
