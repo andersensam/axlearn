@@ -930,6 +930,8 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
         # NCCL flags needed
         env_vars.update(
             {
+                # More debugging.
+                "TF_CPP_MIN_LOG_LEVEL": "0",
                 # Enable auto PGLE available in jax 0.4.33
                 "JAX_ENABLE_PGLE": "True",
                 "JAX_PGLE_PROFILING_RUNS": "3",
@@ -938,7 +940,7 @@ class A3UltraReplicatedJob(GPUReplicatedJob):
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NVTE_FUSED_ATTN": "1",
                 # Needed to help resolve GPU OOM on fuji v2 70B
-                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.92",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
                 "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 "NCCL_DEBUG": "WARN",
                 "NCCL_SOCKET_IFNAME": "=eth0,eth1",
@@ -1199,6 +1201,10 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "name": "tcpx-nccl-plugin-volume",
                 "emptyDir": {},
             },
+            {
+                "name": "aperture-devices",
+                "hostPath": {"path": "/dev/aperture_devices"},
+            },
         ]
 
         return volumes
@@ -1227,15 +1233,15 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
         command = [
             "bash",
             "-c",
-            'set -x; /tcpgpudmarxd/build/app/tcpgpudmarxd --gpu_nic_preset a3vm  \
-                --gpu_shmem_type fd --uds_path /run/tcpx \
-                --setup_param "--verbose 128 2 0" & \n\
-            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;',
+            "set -ex; chmod 755 /fts/entrypoint_rxdm_container.sh; \n\
+            /fts/entrypoint_rxdm_container.sh --num_hops=2 --num_nics=8 \
+                --uid= --alsologtostderr &\n\
+            while [ ! -f /run/tcpx/terminated ]; do sleep 10; done;",
         ]
 
         return dict(
             name="tcpx-daemon",
-            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/tcpgpudmarxd-dev:v2.0.11",
+            image="us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/tcpgpudmarxd-dev:latest",
             securityContext={"privileged": True},
             command=command,
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
@@ -1256,6 +1262,7 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
             {"name": "tcpx-socket", "mountPath": "/run/tcpx"},
             {"name": "nvidia-install-dir-host", "mountPath": "/usr/local/nvidia/lib64"},
             {"name": "tcpx-nccl-plugin-volume", "mountPath": "/usr/local/tcpx"},
+            {"name": "aperture-devices", "mountPath": "/dev/aperture_devices"},
         ]
 
         env_vars: dict[str, str] = {}
@@ -1264,24 +1271,58 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
 
         default_xla_flags = [
             "--xla_gpu_enable_latency_hiding_scheduler=true",
-            # Allows combining multiple all reduce into single all reduce.
-            # "--xla_gpu_all_reduce_contiguous",
+            "--xla_gpu_enable_triton_gemm=false",
+            "--xla_gpu_enable_highest_priority_async_stream=true",
             # Increase combine threshold to 1GB for improved performance.
             # A3 and TCPX performs bad with smaller message sizes.
-            "--xla_gpu_all_reduce_combine_threshold_bytes=1073741824",
+            "--xla_gpu_all_reduce_combine_threshold_bytes=134217728",
             "--xla_gpu_all_gather_combine_threshold_bytes=1073741824",
-            "--xla_gpu_reduce_scatter_combine_threshold_bytes=1073741824",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=33554432",
+            "--xla_gpu_enable_pipelined_all_gather=true",
+            "--xla_gpu_enable_pipelined_reduce_scatter=true",
+            "--xla_gpu_enable_pipelined_all_reduce=true",
+            "--xla_gpu_enable_while_loop_double_buffering=true",
+            "--xla_gpu_enable_all_gather_combine_by_dim=false",
+            "--xla_gpu_enable_reduce_scatter_combine_by_dim=false",
+            "--xla_disable_hlo_passes=rematerialization",
         ]
         env_vars["XLA_FLAGS"] = " ".join(default_xla_flags)
 
         env_vars.update(
             {
+                # More debugging.
+                "TF_CPP_MIN_LOG_LEVEL": "0",
+                # Enable auto PGLE available in jax 0.4.33
+                "JAX_ENABLE_PGLE": "True",
+                "JAX_PGLE_PROFILING_RUNS": "3",
+                # This is needed for flash attention + auto PGLE to work
+                "JAX_REMOVE_CUSTOM_PARTITIONING_PTR_FROM_CACHE_KEY": "True",
+                # XLA team flags used this not sure what it does yet. See maxtext_wrapper.py
+                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+                "NVTE_FUSED_ATTN": "1",
+                # Needed to help resolve GPU OOM on fuji v2 70B
+                "XLA_PYTHON_CLIENT_MEM_FRACTION": "0.85",
+                "TF_FORCE_GPU_ALLOW_GROWTH": "true",
                 # Ensure the TCPX libs get picked up
                 "LD_LIBRARY_PATH": "/usr/local/tcpx/lib64:/usr/local/nvidia/lib64",
+                "NCCL_FASTRAK_LLCM_DEVICE_DIRECTORY": "/dev/aperture_devices",
+                "NCCL_FASTRAK_CTRL_DEV": "eth0",
+                "NCCL_FASTRAK_IFNAME": "eth1,eth2,eth3,eth4,eth5,eth6,eth7,eth8",
+                "NCCL_FASTRAK_USE_LLCM": "1",
+                "NCCL_FASTRAK_NUM_FLOWS": "2",
+                "NCCL_FASTRAK_USE_SNAP": "1",
+                "NCCL_FASTRAK_PLUGIN_ACCEPT_TIMEOUT_MS": "600000",
+                "NCCL_FASTRAK_ENABLE_CONTROL_CHANNEL": "0",
+                "NCCL_FASTRAK_ENABLE_HOTPATH_LOGGING": "0",
+                "NCCL_MIN_NCHANNELS": "4",
+                "NCCL_TUNER_PLUGIN": "libnccl-tuner.so",
+                "NCCL_TUNER_CONFIG_PATH": "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto",
+                "NCCL_SHIMNET_GUEST_CONFIG_CHECKER_CONFIG_FILE": (
+                    "/usr/local/nvidia/lib64/a3plus_guest_config.textproto"
+                ),
                 # Set to 0 to encourage rail alignment.
                 "NCCL_CROSS_NIC": "0",
-                # TCPX only supports Ring algorithm.
-                "NCCL_ALGO": "Ring",
+                "NCCL_ALGO": "Ring,Tree",
                 # TCPX only supports Simple protocol.
                 "NCCL_PROTO": "Simple",
                 "NCCL_DEBUG": "WARN",
@@ -1289,34 +1330,19 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 # Enable GPU Direct RDMA when GPU and NIC are same PCI switch.
                 "NCCL_NET_GDR_LEVEL": "PIX",
                 # TCPX requires disabling PXN.
-                "NCCL_P2P_PXN_LEVEL": "0",
-                # The NCCL_GPU_DIRECTTCPX variables can not be tweaked.
-                "NCCL_GPUDIRECTTCPX_FORCE_ACK": "0",
-                "NCCL_GPUDIRECTTCPX_TX_COMPLETION_NANOSLEEP": "1000",
-                "NCCL_GPUDIRECTTCPX_PROGRAM_FLOW_STEERING_WAIT_MICROS": "1000000",
-                "NCCL_GPUDIRECTTCPX_TX_BINDINGS": (
-                    "eth1:8-21,112-125;eth2:8-21,112-125;eth3:60-73,164-177;eth4:60-73,164-177"
-                ),
-                "NCCL_GPUDIRECTTCPX_RX_BINDINGS": (
-                    "eth1:22-35,124-139;eth2:22-35,124-139;eth3:74-87,178-191;eth4:74-87,178-191"
-                ),
-                "NCCL_GPUDIRECTTCPX_SOCKET_IFNAME": "eth1,eth2,eth3,eth4",
-                "NCCL_GPUDIRECTTCPX_CTRL_DEV": "eth0",
-                "NCCL_GPUDIRECTTCPX_UNIX_CLIENT_PREFIX": "/run/tcpx",
+                # "NCCL_P2P_PXN_LEVEL": "0",
                 # Improves performance but can be tweaked.
                 "NCCL_DYNAMIC_CHUNK_SIZE": "524288",
                 "NCCL_P2P_NET_CHUNKSIZE": "524288",
                 "NCCL_P2P_PCI_CHUNKSIZE": "524288",
                 "NCCL_P2P_NVL_CHUNKSIZE": "1048576",
                 # The number of sockets per thread improves performance.
-                "NCCL_NSOCKS_PERTHREAD": "4",
-                "NCCL_SOCKET_NTHREADS": "1",
+                # "NCCL_NSOCKS_PERTHREAD": "4",
+                # "NCCL_SOCKET_NTHREADS": "1",
                 # Use the system NIC for NCCL control plane comms.
                 "NCCL_SOCKET_IFNAME": "eth0",
                 # TCPX is not compatible with NVLS.
                 "NCCL_NVLS_ENABLE": "0",
-                # The a3plus (mega) tuner config is needed to function properly
-                "NCCL_TUNER_CONFIG_PATH": "/usr/local/nvidia/lib64/a3plus_tuner_config.textproto",
             }
         )
 
@@ -1365,11 +1391,19 @@ class A3MegaReplicatedJob(GPUReplicatedJob):
                 "mountPath": "/var/lib/tcpx",
             },
         ]
-        command = ["bash", "-c", "/scripts/container_entry.sh install"]
+        command = command = [
+            "bash",
+            "-c",
+            'set -ex; chmod 755 /scripts/container_entry.sh; \n\
+             /scripts/container_entry.sh install; \n\
+             mkdir -p /usr/lib/tcpx/lib64; \n\
+             cp -r /var/lib/tcpxo/lib64/. /usr/lib/tcpx/lib64; \n\
+             echo "installation finishes";',
+        ]
         return dict(
             name="tcpx-nccl-plugin-installer",
             image=(
-                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpx/nccl-plugin-gpudirecttcpx-dev:v3.1.7"
+                "us-docker.pkg.dev/gce-ai-infra/gpudirect-tcpxo/nccl-plugin-gpudirecttcpx-dev:latest"
             ),
             command=command,
             env=[{"name": "LD_LIBRARY_PATH", "value": "/usr/local/nvidia/lib64"}],
