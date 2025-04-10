@@ -375,7 +375,7 @@ def get_trainer_kwargs(
             ),
             learner_kwargs=dict(peak_lr=3e-4, weight_decay=0.1),
             max_sequence_length=max_sequence_length,
-            train_batch_size=train_batch_size,
+            train_batch_size=16,
             max_step=max_step,
             mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8),
             mesh_rules=(
@@ -483,9 +483,9 @@ def get_trainer_kwargs(
                             MeshShapeModifier.default_config().set(  
                                 mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
                             ),
-                            #FP8ConfigModifier.default_config().set(
-                            #    fp8_amax_history_length=1
-                            #)
+                            FP8ConfigModifier.default_config().set(
+                                fp8_amax_history_length=128
+                            )
                         ],
                     ),
                 ),
