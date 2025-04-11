@@ -1,21 +1,18 @@
 # syntax=docker/dockerfile:1
 
 ARG TARGET=base
-ARG BASE_IMAGE=python:3.10-slim
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal:9.5-1742914212
 
 FROM ${BASE_IMAGE} AS base
 
-# Install curl and gpupg first so that we can use them to install google-cloud-cli.
-# Any RUN apt-get install step needs to have apt-get update otherwise stale package
-# list may occur when previous apt-get update step is cached. See here for more info:
-# https://docs.docker.com/build/building/best-practices/#apt-get
-RUN apt-get update && apt-get install -y curl gnupg
+# Enable the Google Cloud CLI repo
+COPY axlearn/cloud/gcp/repo/google-cloud-sdk.repo /etc/yum.repos.d/google-cloud-sdk.repo
 
-RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee -a /etc/apt/sources.list.d/google-cloud-sdk.list && \
-    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
-    apt-get update -y && \
-    apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli
+# Install curl and gpupg first so that we can use them to install google-cloud-cli.
+RUN microdnf clean all && \
+  microdnf install -y gnupg python3.11 google-cloud-cli wget nano findutils && \
+  microdnf clean all && rm -rf /var/cache/yum && \
+  cp /etc/ssl/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt
 
 # Setup.
 RUN mkdir -p /root
@@ -26,11 +23,10 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv $VIRTUAL_ENV
+RUN python3.11 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-# Install dependencies.
-RUN pip install flit
-RUN pip install --upgrade pip
+# Install dependencies and purge the cache
+RUN pip install --upgrade pip && pip install flit pytest pytest-instafail && pip cache purge
 
 ################################################################################
 # CI container spec.                                                           #
@@ -75,7 +71,7 @@ COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
 # See: https://cloud.google.com/dataflow/docs/guides/build-container-image#use_a_custom_base_image
-COPY --from=apache/beam_python3.10_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
+COPY --from=apache/beam_python3.11_sdk:2.52.0 /opt/apache/beam /opt/apache/beam
 ENTRYPOINT ["/opt/apache/beam/boot"]
 
 ################################################################################
@@ -99,9 +95,17 @@ COPY . .
 
 FROM base AS gpu
 
+# Enable the CUDA repo
+RUN curl -o /etc/yum.repos.d/cuda-rhel9.repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo
+
+# Install the CUDA development libraries (libnvrtc.so), needed by newer versions of JAX
+RUN microdnf install -y cuda-libraries-devel-12-8 libibverbs && \
+  microdnf clean all && rm -rf /var/cache/yum
+
 # TODO(markblee): Support extras.
-ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-RUN pip install .[core,gpu]
+ENV PIP_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_nightly_releases.html" JAX_TRACEBACK_FILTERING=off
+RUN pip install .[core,gpu] && pip cache purge
+
 COPY . .
 
 ################################################################################
