@@ -46,7 +46,7 @@ ENV VIRTUAL_ENV=/opt/venv
 RUN /opt/python3.10/bin/python3.10 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
-RUN pip install --upgrade pip && pip install flit && pip cache purge
+RUN pip install --upgrade pip && pip install uv flit && pip cache purge
 
 ################################################################################
 # CI container spec.                                                           #
@@ -56,7 +56,7 @@ RUN pip install --upgrade pip && pip install flit && pip cache purge
 FROM base AS ci
 
 # TODO(markblee): Remove gcp,vertexai_tensorboard from CI.
-RUN pip install .[core,dev,grain,gcp,vertexai_tensorboard] && pip cache purge
+RUN uv pip install .[core,dev,grain,gcp,vertexai_tensorboard] && uv cache clean
 COPY . .
 
 # Defaults to an empty string, i.e. run pytest against all files.
@@ -75,7 +75,7 @@ FROM base AS bastion
 # TODO(markblee): Consider copying large directories separately, to cache more aggressively.
 # TODO(markblee): Is there a way to skip the "production" deps?
 COPY . /root/
-RUN pip install .[core,gcp,vertexai_tensorboard] && pip cache purge
+RUN uv pip install .[core,gcp,vertexai_tensorboard] && uv cache clean
 
 ################################################################################
 # Dataflow container spec.                                                     #
@@ -86,7 +86,7 @@ FROM base AS dataflow
 # Beam workers default to creating a new virtual environment on startup. Instead, we want them to
 # pickup the venv setup above. An alternative is to install into the global environment.
 ENV RUN_PYTHON_SDK_IN_DEFAULT_ENVIRONMENT=1
-RUN pip install .[core,gcp,dataflow] && pip cache purge
+RUN uv pip install .[core,gcp,dataflow] && uv cache clean
 COPY . .
 
 # Dataflow workers can't start properly if the entrypoint is not set
@@ -105,8 +105,8 @@ ARG EXTRAS=
 ENV PIP_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN pip install .[core,tpu] && pip cache purge
-RUN if [ -n "$EXTRAS" ]; then pip install .[$EXTRAS] && pip cache purge; fi
+RUN uv pip install .[core,tpu] && uv cache clean
+RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
 
 ################################################################################
@@ -123,7 +123,7 @@ RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/com
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN pip install .[core,gpu] && pip cache purge
+RUN uv pip install .[core,gpu] && uv cache clean
 COPY . .
 
 ################################################################################
