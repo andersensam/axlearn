@@ -1383,8 +1383,7 @@ class A4HighReplicatedJob(GPUReplicatedJob):
         platform_xla_flags = [
             "--xla_gpu_all_reduce_combine_threshold_bytes=2147483648",
             "--xla_gpu_all_gather_combine_threshold_bytes=2147483648",
-            "--xla_gpu_reduce_scatter_combine_threshold_bytes=2147483648",
-            "--xla_gpu_cudnn_gemm_fusion_level=3",
+            "--xla_gpu_reduce_scatter_combine_threshold_bytes=16777216",
             "--xla_gpu_enable_command_buffer=FUSION,CUSTOM_CALL",
         ]
         # Add platform-specific XLA flags to the common flags
@@ -1400,9 +1399,9 @@ class A4HighReplicatedJob(GPUReplicatedJob):
                 "NCCL_DEBUG": "WARN",
                 "NCCL_CROSS_NIC": "0",
                 "NCCL_NET_GDR_LEVEL": "PIX",
-                "NCCL_P2P_NET_CHUNKSIZE": "131072",
-                "NCCL_P2P_PCI_CHUNKSIZE": "131072",
-                "NCCL_P2P_NVL_CHUNKSIZE": "524288",
+                "NCCL_P2P_NET_CHUNKSIZE": "65536",
+                "NCCL_P2P_PCI_CHUNKSIZE": "65536",
+                "NCCL_P2P_NVL_CHUNKSIZE": "262144",
                 "NCCL_NVLS_CHUNKSIZE": "524288",
                 "NCCL_IB_GID_INDEX": "3",
                 "NCCL_IB_ADAPTIVE_ROUTING": "1",

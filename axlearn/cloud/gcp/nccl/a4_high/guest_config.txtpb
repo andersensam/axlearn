@@ -14,17 +14,17 @@ env_var {
 env_var {
   check_policy: POLICY_ENFORCED
   name: "NCCL_P2P_NET_CHUNKSIZE"
-  value: "131072"
+  value: "65536"
 }
 env_var {
   check_policy: POLICY_ENFORCED
   name: "NCCL_P2P_PCI_CHUNKSIZE"
-  value: "131072"
+  value: "65536"
 }
 env_var {
   check_policy: POLICY_ENFORCED
   name: "NCCL_P2P_NVL_CHUNKSIZE"
-  value: "524288"
+  value: "262144"
 }
 env_var {
   check_policy: POLICY_ENFORCED
