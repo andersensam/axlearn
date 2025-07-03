@@ -15,7 +15,7 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.
     curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && \
     apt-get install -y apt-transport-https ca-certificates gcc g++ \
-      git screen ca-certificates google-perftools google-cloud-cli python3.10-venv && apt clean -y
+      git screen ca-certificates google-perftools google-cloud-cli python3.11-venv && apt clean -y
 
 # Setup.
 RUN mkdir -p /root
@@ -26,7 +26,7 @@ COPY pyproject.toml pyproject.toml
 RUN mkdir axlearn && touch axlearn/__init__.py
 # Setup venv to suppress pip warnings.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
+RUN python3.11 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install dependencies.
 RUN pip install --upgrade pip && pip install uv flit && pip cache purge
@@ -85,10 +85,13 @@ FROM base AS tpu
 
 ARG EXTRAS=
 
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/libtpu_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/libtpu_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Ensure we install the TPU version, even if building locally.
 # Jax will fallback to CPU when run on a machine without TPU.
-RUN uv pip install --prerelease=allow .[core,tpu] && uv cache clean
+# Ensure we are using the patched TensorFlow wheel
+RUN uv pip install --no-index --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html --no-deps tensorflow && \
+    uv pip install --prerelease=allow .[core,tpu] && \
+    uv cache clean
 RUN if [ -n "$EXTRAS" ]; then uv pip install .[$EXTRAS] && uv cache clean; fi
 COPY . .
 
@@ -99,13 +102,16 @@ COPY . .
 FROM base AS gpu
 
 # TODO(markblee): Support extras.
-ENV UV_FIND_LINKS=https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+ENV UV_FIND_LINKS="https://storage.googleapis.com/jax-releases/jax_cuda_releases.html,https://storage.googleapis.com/axlearn-wheels/wheels.html"
 # Enable the CUDA repository and install the required libraries (libnvrtc.so)
 RUN curl -o cuda-keyring_1.1-1_all.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
     dpkg -i cuda-keyring_1.1-1_all.deb && \
     apt-get update && apt-get install -y cuda-libraries-dev-12-8 ibverbs-utils && \
     apt clean -y
-RUN uv pip install .[core,gpu] && uv cache clean
+# Ensure we are using the patched TensorFlow wheel
+RUN uv pip install --no-index --find-links https://storage.googleapis.com/axlearn-wheels/wheels.html --no-deps tensorflow && \
+    uv pip install .[core,gpu] && \
+    uv cache clean
 COPY . .
 
 ################################################################################

@@ -7,7 +7,7 @@ name = "axlearn"
 version = "0.1.7"
 description = "AXLearn"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 # Production dependencies.
 # Minimal requirments for axlearn/common/config.py.
@@ -23,9 +23,9 @@ core = [
     "absl-py==2.1.0",
     "chex==0.1.88",
     "importlab==0.8.1",  # breaks pytype on 0.8
-    "jax==0.5.3",
-    "jaxlib==0.5.3",
-    "ml-dtypes==0.4.1",
+    "jax==0.6.2",
+    "jaxlib==0.6.2",
+    "ml-dtypes==0.5.1",
     "msgpack==1.1.0",  # for checkpointing.
     "nltk==3.7",  # for text preprocessing
     "optax==0.1.7",  # optimizers (0.1.0 has known bugs).
@@ -94,7 +94,7 @@ gcp = [
     "google-api-python-client==2.109.0",
     "google-auth==2.29.0",
     "google-auth[pyopenssl]",  # Ensures that we have compatible pyopenssl/cryptography pins.
-    "google-cloud-storage==2.16.0",
+    "google-cloud-storage==2.17.0",
     "google-cloud-compute==1.19.2", # Needed for region discovery for CloudBuild API access.
     "google-cloud-core==2.3.3",
     "google-cloud-build==3.24.1",
@@ -108,8 +108,9 @@ gcp = [
 # Note: Specify -f https://storage.googleapis.com/jax-releases/libtpu_releases.html during install.
 tpu = [
     "axlearn[gcp]",
-    "jax[tpu]==0.5.3",  # must be >=0.4.19 for compat with v5p.
+    "jax[tpu]==0.6.2",  # must be >=0.4.19 for compat with v5p.
     "pathwaysutils==0.1.1",  # For JAX+Pathways single-controller accelerator coordinator.
+    "libtpu==0.0.17",
 ]
 # Vertex AI tensorboard. TODO(markblee): Merge with `gcp`.
 vertexai_tensorboard = [
@@ -120,7 +121,7 @@ vertexai_tensorboard = [
     "setuptools==65.7.0",
     # Pin version to fix Tensorboard uploader TypeError: can only concatenate str (not "NoneType") to str
     # https://github.com/googleapis/python-aiplatform/commit/4f982ab254b05fe44a9d2ed959fca2793961b56c
-    "google-cloud-aiplatform[tensorboard]==1.61.0",
+    "google-cloud-aiplatform[tensorboard]",
     "tensorboard",
 ]
 # Dataflow dependencies.
@@ -132,9 +133,9 @@ dataflow = [
 ]
 # GPU custom kernel dependency.
 gpu = [
-    "triton==2.1.0",
-    "jax[cuda12]==0.5.3",
-    "nvidia-ml-py==12.560.30",
+    "triton>=2.1.0",
+    "jax[cuda12]==0.6.2",
+    "nvidia-ml-py>=12.560.30",
 ]
 # Open API inference.
 open_api = [
