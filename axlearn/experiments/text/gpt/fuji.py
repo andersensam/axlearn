@@ -857,7 +857,8 @@ def get_trainer_kwargs(
                             V6eFlashConfigModifier.default_config(),
                         ],
                     ),
-                    (
+                ),
+                (
                     "gpu-(a4-highgpu-8g)-(256|512|1024)",
                     ChainConfigModifier.default_config().set(
                         config_modifiers=[
@@ -869,8 +870,7 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
-                ),
-            ),
+            )
         )
     else:
         raise NotImplementedError(f"Unknown model size {model_size}.")
