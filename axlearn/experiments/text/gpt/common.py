@@ -685,9 +685,9 @@ def get_trainer_config_fn(
     mesh_shape: Union[MeshShape, HybridMeshShape],
     mesh_axis_names: Sequence[str] = MESH_AXIS_NAMES,
     mesh_rules: Optional[Sequence[tuple[str, Optional[Union[MeshShape, HybridMeshShape]]]]] = None,
-    eval_every_n_steps: int = 5000,
+    eval_every_n_steps: int = 250,
     eval_batch_size: Optional[int] = None,
-    keep_every_n_steps: int = 50_000,
+    keep_every_n_steps: int = 250,
     save_every_n_steps: Optional[int] = None,
     init_state_builder: Optional[state_builder.Builder.Config] = None,
 ) -> TrainerConfigFn:

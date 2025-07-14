@@ -111,6 +111,7 @@ TOTAL_TOKENS = {
     },
     Version.V2: {
         "test": 2 * (1024**4),  # 2T tokens
+        "3B": 2 * (1024**4),  # 2T tokens
         "7B": 2 * (1024**4),  # 2T tokens
         "70B": 2 * (1024**4),  # 2T tokens
         "150B": 2 * (1024**4),  # 2T tokens
@@ -393,6 +394,17 @@ def get_trainer_kwargs(
                             GradientAccumulationModifier.default_config().set(
                                 grad_acc_steps=4,
                             ),
+                        ],
+                    ),
+                ),
+                (
+                    "tpu-v6e-16",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=16)
+                            ),
+                            V6eFlashConfigModifier.default_config(),
                         ],
                     ),
                 ),
