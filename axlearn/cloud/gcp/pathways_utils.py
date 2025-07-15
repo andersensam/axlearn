@@ -43,7 +43,7 @@ _PATHWAYS_WORKER_PORT = 29001
 # Pin to specific pathways image version for stable release.
 # There is no guarantee that this image will work with newer Jax releases.
 # However this image was also tested in Maxtext with Jax 0.6.1.
-_PATHWAYS_IMAGE_TAG = "jax-0.5.3-patch060625"
+_PATHWAYS_IMAGE_TAG = "latest"
 # The docker image used by pathways proxy container.
 _PATHWAYS_PROXY_IMAGE = (
     f"us-docker.pkg.dev/cloud-tpu-v2-images/pathways/proxy_server:{_PATHWAYS_IMAGE_TAG}"
@@ -62,8 +62,8 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "cloud.google.com/gke-nodepool"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "pathways-pool"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:

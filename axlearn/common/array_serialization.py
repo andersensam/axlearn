@@ -477,8 +477,8 @@ async def _async_deserialize(
 
         await byte_limiter.release_bytes(requested_bytes)
         return result
-
-    return await serialization.create_async_array_from_callback(shape, in_sharding, cb)
+    # pylint: disable-next=protected-access
+    return await serialization.ts_impl._create_async_array_from_callback(shape, in_sharding, cb)
 
 
 # Reference:
