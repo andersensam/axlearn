@@ -408,6 +408,19 @@ def get_trainer_kwargs(
                         ],
                     ),
                 ),
+                # Ensure the gpu_block_size is updated for Blackwell (B200 / A4)
+                (
+                    "gpu-(a4-highgpu-8g)-(256|512|1024)",
+                    ChainConfigModifier.default_config().set(
+                        config_modifiers=[
+                            MeshShapeModifier.default_config().set(
+                                mesh_shape=mesh_shape_from_axes(data=-1, fsdp=8)
+                            ),
+                            # Modify the GPU block-size for B200 platform (Pallas kernels)
+                            FlashBlockSizeModifier.default_config().set(gpu_block_size=64),
+                        ],
+                    ),
+                ),
             ),
         )
     elif model_size == "7B":
