@@ -62,8 +62,8 @@ _PATHWAYS_HEAD_REPLICATED_JOB_NAME = "pathways-head"
 _PATHWAYS_WORKER_REPLICATED_JOB_NAME = "pathways-worker"
 
 # Add node-selector for cpu workload to avoid sharing nodes with system services.
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "cloud.google.com/gke-nodepool"
-_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "pathways-pool"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_KEY = "axlearn/nodepool_type"
+_PATHWAYS_HEAD_NODE_POOL_SELECTOR_VALUE = "workload"
 
 
 def parse_xla_flag_value(value: str) -> Union[int, bool, str]:
